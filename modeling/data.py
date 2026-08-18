@@ -1,18 +1,15 @@
 """Data loading, temporal split, and target/feature construction.
 
-Loads the ``claims`` table from DuckDB, builds the structural feature matrix
-``X`` (no cost columns => no target leakage), derives every target rate
-(total + per-category) as ``sum(cost cols) / insured_years``, and splits
-temporally into train (<=2020) and test (>=2021).
-
-The test years (2021-2023) are *never* used to fit anything. Imputation
-statistics (lat/long medians) are computed on the training rows only and
-applied to both splits.
+Builds the structural feature matrix (no cost columns, so no target leakage),
+derives every target rate as sum(cost cols) / insured_years, and splits at
+2020/2021. Nothing is fitted on the test years — the lat/long imputation
+medians come from the training rows and are applied to both splits.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import duckdb
 import numpy as np
@@ -21,27 +18,13 @@ import pandas as pd
 from . import config
 
 
-# ---------------------------------------------------------------------------
-# Container
-# ---------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class Dataset:
     """Train/test feature matrices, all target rates, and the sample weight.
 
-    Attributes
-    ----------
-    X_train, X_test:
-        Structural feature frames (columns == ``config.FEATURES``).
-    y_train, y_test:
-        DataFrames of target *rates* (euros per insured year); one column per
-        target key in ``config.TARGETS`` (``"total"`` + 23 categories).
-    w_train, w_test:
-        ``insured_years`` per row — the sample weight for fitting and metrics.
-    meta_train, meta_test:
-        Identifier columns (year, postal_code_3, gementee, gementee_code,
-        age_group, gender) kept for disaggregated evaluation, NOT used as
-        model inputs beyond what already lives in ``X``.
+    ``y`` holds one column of rates (euros per insured year) per key in
+    ``config.TARGETS``; ``w`` is insured_years; ``meta`` carries the identifier
+    columns for disaggregated evaluation and is not a model input.
     """
 
     X_train: pd.DataFrame
@@ -54,25 +37,13 @@ class Dataset:
     meta_test: pd.DataFrame
 
 
-_META_COLUMNS = [
-    "year", "postal_code_3", "gementee", "gementee_code", "age_group", "gender",
-]
-
-
-# ---------------------------------------------------------------------------
-# Loading
-# ---------------------------------------------------------------------------
-
 def _load_raw() -> pd.DataFrame:
     """Read the full ``claims`` table into a DataFrame (read-only)."""
     con = duckdb.connect(str(config.DB_PATH), read_only=True)
     try:
-        # Load features + cost columns + the weight + every identifier column
-        # used for disaggregation/metadata (some, e.g. gementee_code, are no
-        # longer model features but are still needed by the dashboard).
         needed = sorted(
             set(config.FEATURES) | set(config.COST_COLUMNS)
-            | {config.WEIGHT_COLUMN} | set(_META_COLUMNS)
+            | {config.WEIGHT_COLUMN} | set(config.META_COLUMNS)
         )
         cols = ", ".join(needed)
         df = con.execute(f"SELECT {cols} FROM claims").fetchdf()
@@ -81,23 +52,40 @@ def _load_raw() -> pd.DataFrame:
     return df
 
 
+def cost_rate(df: pd.DataFrame, cost_cols: list[str]) -> np.ndarray:
+    """Rate in euros per insured-year: ``sum(cost_cols) / insured_years``.
+
+    The only definition of a cost rate in the project; the denominator is
+    always insured_years, never number_of_insured.
+    """
+    numerator = df[cost_cols].sum(axis=1).to_numpy(dtype=float)
+    return numerator / df[config.WEIGHT_COLUMN].to_numpy(dtype=float)
+
+
+def total_rate(df: pd.DataFrame) -> np.ndarray:
+    """Total real cost rate — the primary RQ2 target."""
+    return cost_rate(df, config.COST_COLUMNS)
+
+
 def _build_targets(df: pd.DataFrame) -> pd.DataFrame:
     """Compute every target rate = sum(cost cols) / insured_years."""
-    iy = df[config.WEIGHT_COLUMN].to_numpy(dtype=float)
-    rates: dict[str, np.ndarray] = {}
-    for key, (_label, cost_cols) in config.TARGETS.items():
-        numerator = df[cost_cols].sum(axis=1).to_numpy(dtype=float)
-        rates[key] = numerator / iy
+    rates = {
+        key: cost_rate(df, cost_cols)
+        for key, (_label, cost_cols) in config.TARGETS.items()
+    }
     return pd.DataFrame(rates, index=df.index)
 
 
-def _prepare_features(df: pd.DataFrame, lat_med: float, lon_med: float) -> pd.DataFrame:
+def prepare_features(df: pd.DataFrame, lat_med: float, lon_med: float,
+                     extra_numeric: list[str] = ()) -> pd.DataFrame:
     """Return a clean structural feature frame with nulls handled.
 
-    Categorical nulls (gementee_code) become ``UNKNOWN``; lat/long nulls are
-    imputed with the supplied *training* medians.
+    lat/long nulls take the supplied *training* medians. *extra_numeric*
+    appends further float columns; the temporal track passes its t-1 lag there
+    so both tracks clean their inputs the same way.
     """
-    X = df[config.FEATURES].copy()
+    extra_numeric = list(extra_numeric)
+    X = df[config.FEATURES + extra_numeric].copy()
     for col in config.CATEGORICAL_FEATURES:
         X[col] = X[col].astype("string").fillna(config.UNKNOWN_CATEGORY).astype(str)
     X["latitude"] = X["latitude"].fillna(lat_med)
@@ -105,31 +93,31 @@ def _prepare_features(df: pd.DataFrame, lat_med: float, lon_med: float) -> pd.Da
     X["number_of_insured"] = X["number_of_insured"].astype(float)
     X["insured_years"] = X["insured_years"].astype(float)
     X["year"] = X["year"].astype(int)
+    for col in extra_numeric:
+        X[col] = X[col].astype(float)
     return X
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
+@lru_cache(maxsize=1)
 def load_dataset() -> Dataset:
     """Load claims, build targets/features, and split temporally.
 
-    Returns a :class:`Dataset`. Imputation medians are fit on train rows only.
+    Cached, since run_all drives four stages that each want the dataset and
+    rebuilding re-reads ~380k rows. Treat the returned frames as read-only.
     """
     df = _load_raw()
 
     is_train = df["year"].isin(list(config.TRAIN_YEARS))
     is_test = df["year"].isin(list(config.TEST_YEARS))
 
-    # Impute statistics from the training rows ONLY.
+    # Training rows only.
     lat_med = float(df.loc[is_train, "latitude"].median())
     lon_med = float(df.loc[is_train, "longitude"].median())
 
-    X = _prepare_features(df, lat_med, lon_med)
+    X = prepare_features(df, lat_med, lon_med)
     y = _build_targets(df)
     w = df[config.WEIGHT_COLUMN].astype(float)
-    meta = df[_META_COLUMNS].copy()
+    meta = df[config.META_COLUMNS].copy()
 
     ds = Dataset(
         X_train=X.loc[is_train].reset_index(drop=True),
@@ -147,28 +135,21 @@ def load_dataset() -> Dataset:
 
 def _assert_no_leakage(ds: Dataset) -> None:
     """Fail loudly if the split or feature set violates the leakage rules."""
-    # 1. No cost column may appear among the features.
     leaked = sorted(set(config.COST_COLUMNS) & set(ds.X_train.columns))
     assert not leaked, f"Cost columns leaked into features: {leaked}"
 
-    # 2. Train years are a subset of 2011-2020; test years of 2021-2023.
     train_years = set(ds.meta_train["year"].unique())
     test_years = set(ds.meta_test["year"].unique())
     assert train_years <= set(config.TRAIN_YEARS), f"Bad train years: {train_years}"
     assert test_years <= set(config.TEST_YEARS), f"Bad test years: {test_years}"
     assert train_years.isdisjoint(test_years), "Train/test years overlap"
 
-    # 3. Weights must be strictly positive (rates are well-defined).
+    # Strictly positive weights keep the rates well-defined.
     assert (ds.w_train > 0).all() and (ds.w_test > 0).all(), "Non-positive weight"
 
-    # 4. No residual nulls in the feature matrices.
     assert not ds.X_train.isnull().any().any(), "Null in X_train"
     assert not ds.X_test.isnull().any().any(), "Null in X_test"
 
-
-# ---------------------------------------------------------------------------
-# Smoke test
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     ds = load_dataset()

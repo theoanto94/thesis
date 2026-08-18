@@ -1,15 +1,10 @@
 """Phase 2 Results Dashboard — model comparison & prediction diagnostics.
 
-A SEPARATE Dash app from the Phase 1 EDA dashboard (``app.py``). It reads only
-the persisted artifacts produced by ``modeling/evaluate.py`` (predictions +
-metrics + learning curves) — it never trains anything at runtime.
-
-Run with::
+A separate Dash app from the EDA dashboard in app.py. It only reads the
+artifacts modeling/evaluate.py persisted and never trains anything at runtime.
+All filters live in a single shared dcc.Store.
 
     uv run python app_models.py   # http://127.0.0.1:8051
-
-Tabs: Model Comparison · Prediction Diagnostics · Segmented Performance ·
-Learning Curves. All filters live in a single shared ``dcc.Store``.
 """
 
 from __future__ import annotations
@@ -52,13 +47,11 @@ METRIC_OPTIONS = [
     {"label": "MAE (€)", "value": "mae"},
     {"label": "MAPE (%)", "value": "mape"},
 ]
-#: Metrics where smaller is better (drives highlighting / ranking direction).
+# Drives the highlighting and ranking direction.
 LOWER_IS_BETTER = {"rmse", "mae", "mape"}
 
 
-# ---------------------------------------------------------------------------
-# Artifact loaders (defensive: tolerate missing files so the app still boots)
-# ---------------------------------------------------------------------------
+# Missing files are tolerated so the app still boots without artifacts.
 
 def _read_parquet(path) -> pd.DataFrame:
     return pd.read_parquet(path) if path.exists() else pd.DataFrame()
@@ -89,18 +82,18 @@ def load_learning_curve(model_key: str) -> pd.DataFrame:
     return _read_parquet(config.LEARNING_CURVES_DIR / f"{model_key}.parquet")
 
 
-# Human-readable labels for the structural features (SHAP tab).
+# Feature labels for the SHAP tab.
 SHAP_FEATURE_LABELS = {
     "age_group": "Age band", "gender": "Gender", "postal_code_3": "Postcode area (PC3)",
     "year": "Year", "insured_years": "Insured years (exposure)",
     "number_of_insured": "Insured headcount", "latitude": "Latitude", "longitude": "Longitude",
 }
-# Raw categorical codes → human labels (gender is stored M/V; V = female).
+# Gender is stored M/V.
 GENDER_LABELS = {"M": "Male", "V": "Female"}
 
 
 def _humanize(feature: str, raw_value) -> str:
-    """Pretty-print a raw categorical value (e.g. gender M/V → Male/Female)."""
+    """Pretty-print a raw categorical value."""
     if feature == "gender":
         return GENDER_LABELS.get(str(raw_value), str(raw_value))
     return str(raw_value)
@@ -109,14 +102,10 @@ def _humanize(feature: str, raw_value) -> str:
 def _feature_plot_values(df: pd.DataFrame, feature: str):
     """Return ``(x_values, ticks)`` for plotting a feature on an axis.
 
-    For a low-cardinality categorical (age band, gender), the x position is a
-    **label-ordered** integer code derived from the raw companion column, so the
-    axis reads in natural order (young→old, Female/Male) regardless of how each
-    model happened to encode the category internally (ordinal vs. factorised).
-    ``ticks`` then maps those codes to human labels.
-
-    For numeric / high-cardinality features (year, lat/long, exposure,
-    postcode) the stored model-input value is used and ``ticks`` is ``None``.
+    Low-cardinality categoricals get a label-ordered code from the raw
+    companion column, so the axis reads young→old regardless of how the model
+    encoded the category internally, and ticks maps those codes to labels.
+    Everything else plots the stored model-input value, with no ticks.
     """
     if feature in config.LOW_CARD_FEATURES and feature in df.columns:
         cats = sorted(df[feature].astype(str).unique())
@@ -141,8 +130,8 @@ def shap_models() -> list[str]:
 def _filter_shap(df: pd.DataFrame, f: dict) -> pd.DataFrame:
     """Slice a SHAP matrix to the active region/age/year filters.
 
-    The cost-category filter is intentionally ignored: SHAP here explains the
-    single total cost-rate target (the matrices are not per-category).
+    Cost category is ignored on purpose — these matrices explain the single
+    total cost-rate target and are not per-category.
     """
     if df.empty:
         return df
@@ -180,9 +169,7 @@ def available_regions() -> list[str]:
     return sorted(preds["gementee"].dropna().astype(str).unique())
 
 
-# ---------------------------------------------------------------------------
 # Plot helpers
-# ---------------------------------------------------------------------------
 
 def style(fig, **overrides):
     fig.update_layout(**{**PLOTLY_LAYOUT, **overrides})
@@ -221,9 +208,7 @@ def _wm(df: pd.DataFrame) -> dict:
                             df["weight"].to_numpy())
 
 
-# ---------------------------------------------------------------------------
 # Layout
-# ---------------------------------------------------------------------------
 
 def _target_options():
     # "Total" first, then the 23 categories.
@@ -283,9 +268,8 @@ def header() -> html.Header:
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP],
            title="Healthcare Model Results",
-           # Tab bodies (and their dropdowns: shap-dep-*, seg-*, cmp-metric) are
-           # built by the tab-router callback, so they aren't in the initial
-           # layout — tell Dash that's intentional.
+           # Tab bodies and their dropdowns are built by the tab-router
+           # callback, so they aren't in the initial layout.
            suppress_callback_exceptions=True)
 
 app.layout = html.Div([
@@ -305,9 +289,7 @@ app.layout = html.Div([
 ], style={"backgroundColor": PALETTE["bg"], "minHeight": "100vh"})
 
 
-# ---------------------------------------------------------------------------
 # Filter store
-# ---------------------------------------------------------------------------
 
 @app.callback(
     Output("filters", "data"),
@@ -321,9 +303,7 @@ def _sync_filters(model, target, years, regions, ages):
             "regions": regions or [], "age_groups": ages or []}
 
 
-# ---------------------------------------------------------------------------
 # Tab router
-# ---------------------------------------------------------------------------
 
 @app.callback(Output("tab-content", "children"), Input("tabs", "active_tab"), Input("filters", "data"))
 def _render_tab(active, f):
@@ -343,19 +323,17 @@ def _render_tab(active, f):
     Input("tabs", "active_tab"),
 )
 def _toggle_target_filter(active):
-    """Grey out the cost-category filter on the SHAP tab (not applicable there).
+    """Grey out the cost-category filter on the SHAP tab.
 
-    SHAP explains the single total cost-rate target, so a per-category selection
-    has no effect on this tab — disable it to avoid implying otherwise.
+    SHAP explains the single total cost-rate target, so a per-category
+    selection would do nothing there.
     """
     if active == "t5":
         return True, "opacity-50"
     return False, ""
 
 
-# ---------------------------------------------------------------------------
 # Tab 1 — Model Comparison
-# ---------------------------------------------------------------------------
 
 def tab_comparison(f: dict):
     ov = load_overall()
@@ -436,9 +414,7 @@ def _comparison_bar(metric, f):
                  yaxis=dict(autorange="reversed", type="category"))
 
 
-# ---------------------------------------------------------------------------
 # Tab 2 — Prediction Diagnostics
-# ---------------------------------------------------------------------------
 
 def tab_diagnostics(f: dict):
     df = _filter_predictions(f["model"], f)
@@ -502,9 +478,7 @@ def tab_diagnostics(f: dict):
     ])
 
 
-# ---------------------------------------------------------------------------
 # Tab 3 — Segmented Performance
-# ---------------------------------------------------------------------------
 
 def tab_segmented(f: dict):
     return html.Div([
@@ -586,8 +560,7 @@ def _seg_bar(dim, metric, f):
         rows.append({"seg": label, "val": met[metric]})
     d = pd.DataFrame(rows).dropna().sort_values("val", ascending=metric in LOWER_IS_BETTER)
     d = d.head(25)
-    # Force string labels + a categorical axis: age bands like "10-14" would
-    # otherwise be auto-coerced by Plotly into dates (showing bogus years).
+    # Categorical axis, or Plotly reads age bands like "10-14" as dates.
     fig = go.Figure(go.Bar(x=d["val"], y=d["seg"].astype(str), orientation="h",
                            marker_color=PALETTE["primary"]))
     label = next(o["label"] for o in METRIC_OPTIONS if o["value"] == metric)
@@ -612,17 +585,14 @@ def _seg_rank(dim, metric, f):
     if not frames:
         return empty_fig()
     d = pd.DataFrame(frames).dropna(subset=["val"])
-    # the best model within each segment
     idx = (d.groupby("seg")["val"].idxmin() if metric in LOWER_IS_BETTER
            else d.groupby("seg")["val"].idxmax())
     best = d.loc[idx].copy()
-    # if there are many segments (e.g. ~330 regions), keep the most populous;
-    # then display in segment order (natural age order / alphabetical region).
+    # With ~330 regions, keep the most populous and show them in segment order.
     best = best.sort_values("exposure", ascending=False).head(25).sort_values("seg")
 
     label = next(o["label"] for o in METRIC_OPTIONS if o["value"] == metric)
-    # one trace per winning model -> bars coloured + a legend of models; each
-    # segment (age band / region) is a labelled category on the y-axis.
+    # One trace per winning model, so the bars carry a model legend.
     fig = go.Figure()
     for m in [k for k in MODEL_ORDER if k in set(best["model"])]:
         bm = best[best["model"] == m]
@@ -635,14 +605,12 @@ def _seg_rank(dim, metric, f):
                  legend=dict(orientation="h", yanchor="bottom", y=-0.2, x=0))
 
 
-# ---------------------------------------------------------------------------
 # Tab 4 — Learning Curves
-# ---------------------------------------------------------------------------
 
 def tab_learning(f: dict):
     if f["model"] == STACK_KEY:
-        # The meta-model has no standalone learning curve; overlay the CV curves
-        # of its base learners so the tab is still informative by default.
+        # The meta-model has no learning curve of its own, so overlay its base
+        # learners' CV curves.
         fig = go.Figure()
         has_data = False
         for k in config.STACK_BASE_LEARNERS:
@@ -690,9 +658,7 @@ def tab_learning(f: dict):
     ]), className="border-0 shadow-sm")
 
 
-# ---------------------------------------------------------------------------
-# Tab 5 — SHAP Explainability (reads pre-computed matrices; never recomputes)
-# ---------------------------------------------------------------------------
+# Tab 5 — SHAP Explainability (pre-computed matrices only)
 
 def _active_shap_model(f: dict) -> str | None:
     """The selected model if it's in SHAP scope, else a sensible default."""
@@ -705,9 +671,8 @@ def _active_shap_model(f: dict) -> str | None:
 def _beeswarm_fig(df: pd.DataFrame, height: int = 460, max_points: int = 5000) -> go.Figure:
     """Manual SHAP beeswarm: one jittered strip per feature, coloured by value.
 
-    Features are ordered top-to-bottom by population-weighted mean(|SHAP|).
-    Points are display-subsampled; per-feature values are min-max normalised
-    (1st-99th pct) so a single colour scale reads low→high across features.
+    Ordered by population-weighted mean(|SHAP|), subsampled for display, and
+    normalised per feature so one colour scale reads low→high across them all.
     """
     if df.empty:
         return empty_fig("No instances for current filters.")
@@ -762,8 +727,7 @@ def _importance_bar(mabs: pd.Series, height: int = 460) -> go.Figure:
 def _cross_model_fig(height: int = 460) -> go.Figure:
     """Grouped bar: mean(|SHAP|) per feature, one bar group per model.
 
-    Uses the full (unfiltered) sample so the structural comparison across model
-    classes is stable; ordering is by the cross-model average importance.
+    Deliberately unfiltered, so the comparison across model classes is stable.
     """
     models = shap_models()
     if not models:
@@ -866,7 +830,6 @@ def _shap_dependence(feature, color_feat, f):
     x, x_ticks = _feature_plot_values(df, feature)
     y = df[f"shap_{feature}"].to_numpy(dtype=float)
 
-    # Human-readable x value in the hover for mapped categoricals.
     if x_ticks is not None:
         hov = [_humanize(feature, v) for v in df[feature].tolist()]
         x_hover = "%{customdata}"

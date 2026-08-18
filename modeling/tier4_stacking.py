@@ -1,25 +1,18 @@
 """Tier 4 — stacked meta-ensemble.
 
-Builds a stacked ensemble from the tier 2-3 base learners using **out-of-fold
-(OOF)** predictions, so the meta-learner never sees a base prediction made by a
-model that was trained on that row.
+Per target: K-Fold the training set, collect each base learner's out-of-fold
+predictions into a meta-feature matrix, and fit a weighted Ridge on it. Because
+no row is predicted by a model that trained on it, the meta-learner sees no
+leakage.
 
-Pipeline (per target):
-
-1. K-Fold the training set. For each base learner and each fold, fit on K-1
-   folds (tuned params) and predict the held-out fold. Concatenating the
-   held-out predictions yields one leakage-free OOF prediction per training row.
-2. Stack the base learners' OOF columns into the meta-feature matrix.
-3. Fit a Ridge meta-learner (population-weighted) on that matrix.
-
-For test prediction the base learners are refit on the *full* training set
-(exactly the artifacts persisted by ``train.py``), predict 2021-2023, and those
-predictions feed the trained meta-learner.
+At test time the base learners are the full-train artifacts from train.py, and
+their 2021-2023 predictions feed the fitted meta-learner.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import joblib
 import numpy as np
@@ -33,18 +26,20 @@ from .tune import load_best_params
 STACK_KEY = "stacked"
 
 
-def _base_keys() -> list[str]:
-    """Base learners feeding the stack (tiers 2-3)."""
-    return list(config.STACK_BASE_LEARNERS)
-
-
-def _meta_path(target: str) -> "config.Path":
+def _meta_path(target: str) -> Path:
     return config.MODELS_DIR / f"{STACK_KEY}_meta__{target}.joblib"
 
 
-def build_oof(target: str, ds: Dataset, base_keys: list[str]) -> np.ndarray:
-    """Return the OOF meta-feature matrix ``[n_train, n_base]`` for *target*."""
+def build_oof(target: str, ds: Dataset) -> np.ndarray:
+    """Return the OOF meta-feature matrix ``[n_train, n_base]`` for *target*.
+
+    Column order follows config.STACK_BASE_LEARNERS, which predict_stacked
+    reads too, so the meta-learner's inputs cannot drift between fit and
+    predict.
+    """
+    base_keys = config.STACK_BASE_LEARNERS
     kf = KFold(n_splits=config.N_SPLITS, shuffle=True, random_state=config.RANDOM_STATE)
+    folds = list(kf.split(ds.X_train))
     y = ds.y_train[target]
     w = ds.w_train.to_numpy()
     n = len(ds.X_train)
@@ -52,41 +47,38 @@ def build_oof(target: str, ds: Dataset, base_keys: list[str]) -> np.ndarray:
 
     for j, key in enumerate(base_keys):
         params = factory.apply_best_params(key, load_best_params(key))
-        for tr_idx, va_idx in kf.split(ds.X_train):
-            # fit_for_target guards against folds whose target is constant.
+        for tr_idx, va_idx in folds:
             est = factory.fit_for_target(key, params, ds.X_train.iloc[tr_idx],
                                          y.iloc[tr_idx], w[tr_idx])
             oof[va_idx, j] = factory.predict(est, ds.X_train.iloc[va_idx])
     return oof
 
 
-def train_stacked(target: str, ds: Dataset, base_keys: list[str] | None = None) -> Ridge:
+def train_stacked(target: str, ds: Dataset) -> Ridge:
     """Generate OOF preds, fit the Ridge meta-learner, and persist it."""
     config.ensure_dirs()
-    base_keys = base_keys or _base_keys()
-    oof = build_oof(target, ds, base_keys)
+    oof = build_oof(target, ds)
     meta = Ridge(random_state=config.RANDOM_STATE)
     meta.fit(oof, ds.y_train[target], sample_weight=ds.w_train.to_numpy())
     joblib.dump(meta, _meta_path(target))
-    # Record the base-learner order once (shared across targets).
     (config.PARAMS_DIR / f"{STACK_KEY}.json").write_text(
-        json.dumps({"model": STACK_KEY, "base_learners": base_keys,
+        json.dumps({"model": STACK_KEY,
+                    "base_learners": list(config.STACK_BASE_LEARNERS),
                     "meta_learner": "ridge"}, indent=2)
     )
     return meta
 
 
-def predict_stacked(target: str, X, base_keys: list[str] | None = None) -> np.ndarray:
+def predict_stacked(target: str, X) -> np.ndarray:
     """Predict with the stack: full-train base models -> Ridge meta.
 
-    Requires that ``train.py`` has already persisted the full-train base models
-    and that :func:`train_stacked` has persisted the meta-learner for *target*.
+    Needs train.py and train_stacked to have run for *target* first.
     """
     from .train import model_path  # local import avoids a cycle
 
-    base_keys = base_keys or _base_keys()
     meta_features = np.column_stack([
-        joblib.load(model_path(key, target)).predict(X) for key in base_keys
+        joblib.load(model_path(key, target)).predict(X)
+        for key in config.STACK_BASE_LEARNERS
     ])
     meta: Ridge = joblib.load(_meta_path(target))
     return meta.predict(meta_features)
@@ -98,10 +90,9 @@ def main(targets: list[str] | None = None) -> None:
 
     ds = load_dataset()
     keys = targets or list(config.TARGETS.keys())
-    base_keys = _base_keys()
     for target in keys:
-        meta = train_stacked(target, ds, base_keys)
-        weights = dict(zip(base_keys, np.round(meta.coef_, 3)))
+        meta = train_stacked(target, ds)
+        weights = dict(zip(config.STACK_BASE_LEARNERS, np.round(meta.coef_, 3)))
         print(f"stacked[{target}] meta weights={weights}")
 
 

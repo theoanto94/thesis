@@ -1,17 +1,15 @@
 """Phase 2 — predictive modeling & validation (RQ2).
 
-A four-tier model system predicting real healthcare cost rates
-(2020 constant euros per insured person-year) at the
-postcode3 x age_group x gender x year grain. Trained on 2011-2020,
+A four-tier model system predicting real cost rates at the
+postcode3 x age_group x gender x year grain, trained on 2011-2020 and
 evaluated once on the held-out 2021-2023.
 """
 
 import warnings
 
-# numpy 2.x on macOS Apple Accelerate emits a spurious "divide by zero
-# encountered in matmul" RuntimeWarning for perfectly finite operands (a known
-# Accelerate BLAS quirk). Predictions are verified finite in evaluate.py; this
-# narrow filter keeps training logs clean without masking genuine overflow.
+# numpy 2.x on Apple Accelerate raises matmul warnings for perfectly finite
+# operands. evaluate.py verifies predictions are finite anyway, so filter the
+# three narrowly rather than living with the noise.
 warnings.filterwarnings(
     "ignore",
     message="divide by zero encountered in matmul",
@@ -28,9 +26,8 @@ warnings.filterwarnings(
     category=RuntimeWarning,
 )
 
-# LightGBM's sklearn wrapper warns when predict is called with a bare ndarray
-# after being fit through a ColumnTransformer (feature-name bookkeeping only).
-# Benign — the column order is fixed by the pipeline.
+# LightGBM warns about feature names when predicting from a bare ndarray after
+# a ColumnTransformer fit. The pipeline fixes the column order, so it's noise.
 warnings.filterwarnings(
     "ignore",
     message="X does not have valid feature names",

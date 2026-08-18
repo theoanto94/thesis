@@ -1,21 +1,12 @@
-"""Per-model-family preprocessing.
+"""Per-model-family preprocessing, selected via ``config.MODEL_ENCODER``.
 
-Three encoder families, selected per model via ``config.MODEL_ENCODER``:
+* "linear" — smoothed target encoding for the high-cardinality geography,
+  one-hot for age band and gender, standard scaling for the numerics.
+* "tree" — ordinal encoding of all categoricals, numerics passed through.
+* "catboost" — no transformer at all; see tier3_boosting.py.
 
-* ``"linear"`` — smoothed **target encoding** for the high-cardinality
-  geographic categoricals (postcode3, gemeente), one-hot for the low-card
-  ordered/binary categoricals (age band, gender), and standard scaling for the
-  numeric features. Suited to Linear/Ridge/Lasso.
-* ``"tree"`` — **ordinal encoding** of all categoricals, numerics passed
-  through. Suited to Random Forest / GBM / XGBoost / LightGBM, which split on
-  encoded integers without needing one-hot expansion.
-* ``"catboost"`` — no transformer; CatBoost consumes raw categoricals via its
-  native ``cat_features`` (handled in ``tier3_boosting.py``).
-
-Every transformer is fit on training data only. When wrapped in a scikit-learn
-``Pipeline`` and driven by ``GridSearchCV``/``cross_val_predict``, the encoders
-are refit on each fold's training portion, so target encoding never leaks the
-held-out fold's target.
+Everything lives inside a Pipeline, so the encoders are refit per CV fold and
+target encoding never sees the held-out fold's target.
 """
 
 from __future__ import annotations
@@ -32,20 +23,23 @@ from sklearn.preprocessing import (
 from . import config
 
 
-def make_preprocessor(family: str) -> ColumnTransformer:
-    """Build the ``ColumnTransformer`` for a given encoder *family*.
+def make_preprocessor(
+    family: str, numeric_features: list[str] | None = None
+) -> ColumnTransformer:
+    """Build the ``ColumnTransformer`` for the "linear" or "tree" family.
 
-    Parameters
-    ----------
-    family:
-        One of ``"linear"`` or ``"tree"``. (``"catboost"`` uses no preprocessor
-        and must not be passed here.)
+    Since the transformers drop the remainder, a caller with an extended
+    feature frame (the temporal track and its t-1 lag) has to pass its own
+    *numeric_features*, or the extra columns disappear silently.
     """
+    numeric_features = (
+        list(config.NUMERIC_FEATURES) if numeric_features is None
+        else list(numeric_features)
+    )
     if family == "linear":
-        # Target-encode geography THEN scale it, so the encoded euro values sit
-        # on the same standardized scale as the numeric features — important for
-        # Ridge/Lasso penalties. Drop one dummy level to avoid the
-        # dummy-variable trap (rank-deficient design / unstable OLS coefs).
+        # Scale after target-encoding, so the encoded euro values land on the
+        # same scale as the numerics — the Ridge/Lasso penalties care. Dropping
+        # one dummy level avoids a rank-deficient design.
         geo_pipe = Pipeline([
             ("target", TargetEncoder(smooth="auto", random_state=config.RANDOM_STATE)),
             ("scale", StandardScaler()),
@@ -62,7 +56,7 @@ def make_preprocessor(family: str) -> ColumnTransformer:
                     ),
                     config.LOW_CARD_FEATURES,
                 ),
-                ("num_scale", StandardScaler(), config.NUMERIC_FEATURES),
+                ("num_scale", StandardScaler(), numeric_features),
             ],
             remainder="drop",
         )
@@ -78,7 +72,7 @@ def make_preprocessor(family: str) -> ColumnTransformer:
                     ),
                     config.CATEGORICAL_FEATURES,
                 ),
-                ("num_pass", "passthrough", config.NUMERIC_FEATURES),
+                ("num_pass", "passthrough", numeric_features),
             ],
             remainder="drop",
         )

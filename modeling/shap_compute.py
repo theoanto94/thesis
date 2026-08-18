@@ -1,36 +1,20 @@
 """Phase 3 — offline SHAP computation (exact TreeSHAP).
 
-Computes per-instance SHAP values for the Tier 2-3 base learners
-(``config.SHAP_MODELS``) on a shared, reproducible sample of the held-out
-2021-2023 instances, explaining the *total* real cost-rate target. One parquet
-is written per model to ``artifacts/shap/``:
+Per-instance SHAP values for the Tier 2-3 base learners on a shared sample of
+the held-out instances, explaining the total real cost-rate target. One parquet
+per model in artifacts/shap/, holding shap_<feature> and val_<feature> columns,
+the base value, the meta columns the dashboard filters on, and insured_years so
+importances stay population-weighted. The dashboard only ever reads these.
 
-    shap_<feature>   per-instance SHAP contribution, in the model's input space
-    val_<feature>    the feature value the model consumed (beeswarm colouring)
-    base_value       the explainer's expected value (constant per model)
-    <meta...>        year, postal_code_3, gementee, gementee_code, age_group,
-                     gender — for the dashboard's region/age/year filtering
-    weight           insured_years, so importances stay population-weighted
-
-The dashboard loads these matrices and NEVER recomputes SHAP in a callback.
-
-Notes
------
-* The SAME sampled rows are used for every model, so the cross-model feature
-  importance comparison is like-for-like.
-* Tree-family models (RF / XGBoost / LightGBM) are scikit-learn Pipelines; SHAP
-  runs on the post-encoding matrix (ordinal codes + raw numerics), and the
-  encoded columns are mapped back to bare feature names. CatBoost consumes raw
-  categoricals via a ``Pool``; its categorical ``val_`` columns are factorised
-  to integer codes purely for colour-coding.
-* Random Forest's total-target model was pruned after Phase 2 stacking; it is
-  retrained here from the persisted tuned params (and re-persisted) before its
-  SHAP is computed.
+The same sampled rows go through every model, so the cross-model comparison is
+like-for-like. The tree-family models are Pipelines, so SHAP runs on the
+post-encoding matrix and the columns are mapped back to bare feature names;
+CatBoost takes a raw Pool and has its categorical val_ columns factorised
+purely for colour-coding.
 """
 
 from __future__ import annotations
 
-import json
 import time
 
 import joblib
@@ -39,23 +23,10 @@ import pandas as pd
 import shap
 
 from . import config, data, factory
+from .tune import load_best_params
 
-#: Canonical feature order for the output columns (matches config.FEATURES).
 _FEATURES = config.FEATURES
-_META = data._META_COLUMNS
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _tuned_params(model_key: str) -> dict:
-    """Load the persisted tuned hyperparameters for *model_key* (bare kwargs)."""
-    path = config.PARAMS_DIR / f"{model_key}.json"
-    if not path.exists():
-        return {}
-    payload = json.loads(path.read_text())
-    return payload.get("best_params", {})
+_META = config.META_COLUMNS
 
 
 def _fitted_total_model(model_key: str, ds: data.Dataset):
@@ -63,12 +34,12 @@ def _fitted_total_model(model_key: str, ds: data.Dataset):
     path = config.MODELS_DIR / f"{model_key}__{config.SHAP_TARGET}.joblib"
     if path.exists():
         return joblib.load(path)
-    # Model file missing (e.g. random_forest, pruned after stacking): refit
-    # from tuned params on the full training set and re-persist for reuse.
+    # Random Forest's total model was pruned after stacking; refit from the
+    # tuned params and re-persist it.
     print(f"  [{model_key}] no persisted model — retraining total target …")
     est = factory.fit_for_target(
         model_key,
-        _tuned_params(model_key),
+        factory.apply_best_params(model_key, load_best_params(model_key)),
         ds.X_train,
         ds.y_train[config.SHAP_TARGET],
         ds.w_train,
@@ -92,11 +63,7 @@ def _bare_name(encoded_name: str) -> str:
 
 
 def _shap_pipeline(estimator, X_sample: pd.DataFrame):
-    """SHAP for a tree-family Pipeline -> (shap[FEATURES], val[FEATURES], base).
-
-    Runs TreeSHAP on the post-encoding matrix, then reorders both the SHAP
-    values and the encoded feature values into ``config.FEATURES`` order.
-    """
+    """SHAP for a tree-family Pipeline -> (shap[FEATURES], val[FEATURES], base)."""
     pre = estimator.named_steps["pre"]
     model = estimator.named_steps["model"]
 
@@ -121,7 +88,7 @@ def _shap_catboost(estimator, X_sample: pd.DataFrame):
     sv = np.asarray(explainer.shap_values(pool), dtype=float)  # FEATURES order
     base = float(np.ravel(explainer.expected_value)[0])
 
-    # Model-input value for colouring: raw numerics, factorised categoricals.
+    # Colouring values: raw numerics, factorised categoricals.
     vals = np.empty((len(X_sample), len(_FEATURES)), dtype=float)
     for j, f in enumerate(_FEATURES):
         if f in config.CATEGORICAL_FEATURES:
@@ -130,10 +97,6 @@ def _shap_catboost(estimator, X_sample: pd.DataFrame):
             vals[:, j] = X_sample[f].to_numpy(dtype=float)
     return sv, vals, base
 
-
-# ---------------------------------------------------------------------------
-# Per-model driver
-# ---------------------------------------------------------------------------
 
 def compute_for_model(model_key: str, ds: data.Dataset, idx: np.ndarray) -> pd.DataFrame:
     """Compute and persist the SHAP matrix for one model; return it."""
@@ -169,10 +132,6 @@ def compute_for_model(model_key: str, ds: data.Dataset, idx: np.ndarray) -> pd.D
           f"base €{base:,.0f} · top mean|SHAP|: {top_str}")
     return out
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     """Compute SHAP matrices for every in-scope model on the shared sample."""

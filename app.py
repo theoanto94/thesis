@@ -17,9 +17,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, dash_table, dcc, html
 
-# ---------------------------------------------------------------------------
 # Configuration
-# ---------------------------------------------------------------------------
 
 DB_PATH       = "identifier.db"
 GEOJSON_PATH  = "data/gemeente_2023.geojson"
@@ -66,9 +64,8 @@ PALETTE = {
     "ink":       "#1f2937",
 }
 
-# Styling for model-projected years (>2023), written into the DB by
-# `modeling.temporal.forecast` as the `claims_forecast` table. All projected
-# years share one tier and one style (dashed/faded), distinct from actuals.
+# Projected years (written to the DB by modeling.temporal.forecast) all share
+# one dashed/faded style, distinct from the actuals.
 PROJECTED_COLOR        = "#7f9cc0"                   # lighter primary
 PROJECTED_ACCENT       = "rgba(220, 104, 3, 0.45)"   # faded accent
 PROJECTED_LABEL_STYLE  = {"fontSize": "10px", "color": "#9ca3af", "fontStyle": "italic"}
@@ -84,9 +81,7 @@ PLOTLY_LAYOUT = dict(
 )
 
 
-# ---------------------------------------------------------------------------
 # Data access
-# ---------------------------------------------------------------------------
 
 def _con() -> duckdb.DuckDBPyConnection:
     """Open a read-only connection. Cheap; can be called per callback."""
@@ -94,10 +89,10 @@ def _con() -> duckdb.DuckDBPyConnection:
 
 
 def _forecast_available() -> bool:
-    """True when `claims_forecast` + the `claims_extended` view exist with rows.
+    """True when `claims_forecast` and the `claims_extended` view have rows.
 
-    Both are written by `modeling.temporal.forecast`. Any failure degrades
-    gracefully to actuals-only (slider ends at the last actual year).
+    Any failure degrades to actuals-only, ending the slider at the last actual
+    year.
     """
     try:
         con = _con()
@@ -156,9 +151,7 @@ YEARS, ACTUAL_MAX_YEAR, AGE_GROUPS, GEMENTEES = _load_metadata()
 GEOJSON = _load_geojson()
 
 
-# ---------------------------------------------------------------------------
 # Query helpers
-# ---------------------------------------------------------------------------
 
 def _quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
@@ -190,9 +183,7 @@ def category_label(category: str) -> str:
     return category
 
 
-# ---------------------------------------------------------------------------
-# Projection helpers (years > ACTUAL_MAX_YEAR are model-projected)
-# ---------------------------------------------------------------------------
+# Projection helpers — years past ACTUAL_MAX_YEAR are model-projected.
 
 def shows_projection(f: dict) -> bool:
     """True when the active year range reaches into projected years."""
@@ -262,7 +253,7 @@ def add_split_line_trace(fig, df, y_col: str, name: str, color: str,
             **common,
         ))
     pcolor = projected_color or color
-    # A single point carries no line; only draw it when nothing precedes it.
+    # A single point carries no line.
     if len(projected) >= (2 if not actual.empty else 1):
         fig.add_trace(go.Scatter(
             x=projected["year"], y=projected[y_col],
@@ -322,9 +313,7 @@ def kpi_card(label: str, value: str, subtitle: str = "", emphasize: bool = True)
     return dbc.Card(dbc.CardBody(body_children), className="border-0 shadow-sm h-100")
 
 
-# ---------------------------------------------------------------------------
 # Layout
-# ---------------------------------------------------------------------------
 
 def header() -> html.Header:
     if HAS_FORECAST:
@@ -536,9 +525,7 @@ def tab_geographic() -> dbc.Container:
     ], fluid=True, className="pt-3")
 
 
-# ---------------------------------------------------------------------------
 # App
-# ---------------------------------------------------------------------------
 
 app = Dash(
     __name__,
@@ -572,9 +559,7 @@ app.layout = html.Div([
           "fontFamily": "Inter, Helvetica Neue, Arial, sans-serif"})
 
 
-# ---------------------------------------------------------------------------
 # Shared filter state
-# ---------------------------------------------------------------------------
 
 @app.callback(
     Output("filter-store", "data"),
@@ -595,9 +580,7 @@ def update_filter_store(years, gender, age_groups, category, gementees):
     }
 
 
-# ---------------------------------------------------------------------------
 # KPI summary strip
-# ---------------------------------------------------------------------------
 
 @app.callback(Output("kpi-strip", "children"), Input("filter-store", "data"))
 def kpi_strip(f):
@@ -637,9 +620,7 @@ def kpi_strip(f):
     ], className="g-3")
 
 
-# ---------------------------------------------------------------------------
 # Tab 1 — Temporal Trends
-# ---------------------------------------------------------------------------
 
 @app.callback(Output("chart-1-1", "figure"), Input("filter-store", "data"))
 def chart_1_1(f):
@@ -674,7 +655,6 @@ def chart_1_1(f):
 def chart_1_2(f):
     if not f:
         return empty_fig()
-    # Per category: SUM(cost) / SUM(insured_years), aggregated to year
     select_cols = ",\n        ".join(
         f"SUM(COALESCE({c}, 0)) / NULLIF(SUM(insured_years), 0) AS {c}"
         for c in COST_COLUMNS
@@ -847,15 +827,13 @@ def chart_1_catgrowth(f):
     return style(fig, margin=dict(l=210, r=60, t=20, b=40))
 
 
-# ---------------------------------------------------------------------------
 # Tab 2 — Demographics
-# ---------------------------------------------------------------------------
 
 @app.callback(Output("chart-2-1", "figure"), Input("filter-store", "data"))
 def chart_2_1(f):
     if not f:
         return empty_fig()
-    # Strip the age_group filter so the heatmap can show all bands
+    # Show all bands regardless of the age filter.
     f2 = {**f, "age_groups": []}
     sql = f"""
         SELECT year,
@@ -879,14 +857,13 @@ def chart_2_1(f):
     fig.update_traces(hovertemplate="Year %{x}<br>Age %{y}<br>€%{z:,.0f}/iy<extra></extra>")
     fig.update_layout(
         coloraxis_colorbar=dict(tickformat=",.0f"),
-        # age band strings like '00-04' would otherwise be parsed as dates
+        # or age bands like '00-04' get parsed as dates
         yaxis=dict(type="category"),
         xaxis=dict(type="category"),
     )
     if shows_projection(f):
         years_shown = list(pivot.columns)
         if ACTUAL_MAX_YEAR in years_shown and years_shown[-1] > ACTUAL_MAX_YEAR:
-            # categorical axis: positions are 0..n-1 in column order
             fig.add_vline(x=years_shown.index(ACTUAL_MAX_YEAR) + 0.5,
                           line_color="white", line_width=3)
             note = f"columns > {ACTUAL_MAX_YEAR} are projected"
@@ -902,7 +879,7 @@ def chart_2_1(f):
 def chart_2_2(f):
     if not f:
         return empty_fig()
-    # Strip gender filter so we always see both lines
+    # Both lines, whatever the gender filter says.
     f2 = {**f, "gender": "ALL"}
     sql = f"""
         SELECT year,
@@ -942,7 +919,7 @@ def chart_2_2(f):
 def chart_2_3(f, year):
     if not f or year is None:
         return empty_fig()
-    # Strip age + year filters so the gradient covers all bands for the picked year
+    # The gradient covers every band for the picked year.
     f2 = {**f, "age_groups": [], "year_min": year, "year_max": year}
     sql = f"""
         SELECT age_group,
@@ -981,7 +958,6 @@ def chart_2_3(f, year):
 def chart_2_concentration(f):
     if not f:
         return empty_fig()
-    # Always show all bands here regardless of the age filter
     f2 = {**f, "age_groups": []}
     sql = f"""
         SELECT age_group, SUM({cost_expr(f['category'])}) AS total
@@ -1019,9 +995,7 @@ def chart_2_concentration(f):
     return style(fig)
 
 
-# ---------------------------------------------------------------------------
 # Tab 3 — Geographic
-# ---------------------------------------------------------------------------
 
 @app.callback(Output("chart-3-1", "figure"), Input("filter-store", "data"))
 def chart_3_1(f):
@@ -1233,7 +1207,6 @@ def chart_3_distribution(f):
     return style(fig)
 
 
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     app.run(debug=True, port=8050)

@@ -1,15 +1,8 @@
 """Training orchestration — fit every base model on all 24 targets.
 
-For each base model (tiers 1-3), load the best hyperparameters tuned once on the
-total target (see ``tune.py``) and refit the model on the **full** 2011-2020
-training set for every target (total + 23 categories). Persist each fitted model
-and a per-model timing record (wall-clock seconds + peak RSS delta) for the
-dashboard's computational-cost table.
-
-The stacked ensemble (tier 4) is trained separately in ``tier4_stacking.py``;
-this module produces the base learners it depends on.
-
-Entry point::
+Each base model is refit on the full 2011-2020 training set for every target,
+using the params tuned once on the total. Timing records feed the dashboard's
+computational-cost table. The tier-4 stack is built in tier4_stacking.py.
 
     uv run python -m modeling.train            # all base models, all targets
     uv run python -m modeling.train xgboost    # a single model, all targets
@@ -20,6 +13,7 @@ from __future__ import annotations
 import json
 import time
 import tracemalloc
+from pathlib import Path
 
 import joblib
 
@@ -28,17 +22,13 @@ from .data import Dataset, load_dataset
 from .tune import load_best_params
 
 
-def model_path(model_key: str, target: str) -> "config.Path":
+def model_path(model_key: str, target: str) -> Path:
     """Filesystem path for a fitted ``(model, target)`` artifact."""
     return config.MODELS_DIR / f"{model_key}__{target}.joblib"
 
 
 def fit_one(model_key: str, target: str, ds: Dataset):
-    """Fit *model_key* on one *target* using its tuned params; return estimator.
-
-    Uses ``factory.fit_for_target``, which falls back to a constant predictor
-    for zero-variance targets (e.g. ``integrated_birth_care``).
-    """
+    """Fit *model_key* on one *target* using its tuned params."""
     params = factory.apply_best_params(model_key, load_best_params(model_key))
     return factory.fit_for_target(model_key, params, ds.X_train,
                                   ds.y_train[target], ds.w_train.to_numpy())
@@ -66,9 +56,8 @@ def train_model(model_key: str, ds: Dataset) -> dict:
         "n_targets": len(targets),
         "train_seconds_total": round(elapsed, 1),
         "train_seconds_per_target": round(elapsed / len(targets), 2),
-        # tracemalloc captures Python-side allocations only; the C-backed tree
-        # libraries (xgboost/lightgbm/catboost) under-report here, so we also
-        # record total on-disk model size as a reproducible footprint proxy.
+        # tracemalloc only sees Python-side allocations, so the C-backed tree
+        # libraries under-report; on-disk size is the honest footprint proxy.
         "peak_python_memory_mb": round(peak / 1e6, 1),
         "model_size_mb": round(size_bytes / 1e6, 2),
     }

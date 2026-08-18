@@ -1,13 +1,11 @@
 """Population-weighted regression metrics and disaggregation.
 
-Every metric is weighted by ``insured_years`` (the population exposure), per the
-project rule that this column is the canonical weight. Metrics follow the set
-used by Orji & Ukwandu (2024): R2, RMSE, MAE, MAPE.
+Everything is weighted by insured_years. The metric set follows Orji & Ukwandu
+(2024): R2, RMSE, MAE, MAPE.
 
-MAPE is undefined as the actual approaches zero — common for niche cost
-categories (e.g. maternity care for elderly men). We therefore score MAPE only
-on rows whose actual is at least ``config.MAPE_FLOOR_EUR`` and report the
-fraction of (weighted) exposure that floor covers, so the number is honest.
+MAPE blows up as the actual approaches zero, which happens often in niche
+categories (maternity care for elderly men). It is scored only above
+MAPE_FLOOR_EUR, and the covered share of exposure is reported alongside it.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ import pandas as pd
 
 from . import config
 
-#: Canonical metric column order used in tables and the dashboard.
+# Canonical column order for tables and the dashboard.
 METRIC_NAMES: list[str] = ["r2", "rmse", "mae", "mape", "mape_coverage"]
 
 
@@ -26,12 +24,8 @@ def weighted_metrics(
     y_pred: np.ndarray,
     weight: np.ndarray,
 ) -> dict[str, float]:
-    """Return weighted R2, RMSE, MAE, MAPE (%) and MAPE coverage (fraction).
-
-    Parameters
-    ----------
-    y_true, y_pred, weight:
-        1-D arrays of equal length. ``weight`` is ``insured_years``.
+    """Weighted R2, RMSE, MAE, MAPE (%) and MAPE coverage, from equal-length
+    1-D arrays. *weight* is ``insured_years``.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
@@ -80,21 +74,10 @@ def disaggregate(
     weight: np.ndarray,
     by: str,
 ) -> pd.DataFrame:
-    """Compute weighted metrics within each level of a grouping column.
+    """Weighted metrics within each level of *by*.
 
-    Parameters
-    ----------
-    meta:
-        Identifier frame aligned row-for-row with the predictions; must contain
-        the column named by *by* (e.g. ``"age_group"``, ``"gementee"``,
-        ``"postal_code_3"``).
-    by:
-        The grouping column.
-
-    Returns
-    -------
-    DataFrame indexed by group value with one column per metric plus ``n`` (row
-    count) and ``exposure`` (summed weight).
+    *meta* is the identifier frame aligned row-for-row with the predictions.
+    Returns one row per group, with the metrics plus ``n`` and ``exposure``.
     """
     frame = pd.DataFrame({
         "_g": meta[by].to_numpy(),

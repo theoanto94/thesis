@@ -1,24 +1,15 @@
 """External check of the deployed forecast against a later Vektis release.
 
-OUT OF THESIS SCOPE. This module is deliberately not imported by ``run_all``
-and contributes nothing to model selection, the reported methodology, or any
-figure in the write-up. The thesis panel ends in 2023 and every design decision
-in this track is justified from 2011-2023 alone. Data held here exists only to
-tell us, privately, how the deployed projection actually did.
+OUT OF THESIS SCOPE. Not imported by run_all, and contributes nothing to model
+selection, the methodology, or any figure. The panel ends in 2023 and every
+decision in this track is justified from 2011-2023 alone — a hold-out year
+consulted while choosing a configuration stops being a hold-out. This runs
+after the configuration is fixed and changes nothing on its own.
 
-Keeping it out of the decision loop is the point: a hold-out year consulted
-while choosing a configuration stops being a hold-out. So this script runs
-*after* the configuration is fixed, reports whatever it finds, and changes
-nothing on its own.
-
-It builds a throwaway database over ``data/*_postcode3_en.csv`` plus the
-verification file, aggregating and deflating through the ordinary
-``preprocessing`` pipeline so the actuals are directly comparable to
-``claims_forecast`` in the thesis database. Alongside the model it scores a
-persistence baseline — carrying each cell's last actual rate forward unchanged —
-because a forecast that cannot beat "nothing changes" is not adding anything.
-
-Usage::
+The throwaway database goes through the ordinary preprocessing pipeline, so the
+actuals are directly comparable to claims_forecast. A persistence baseline is
+scored alongside the model, since a forecast that cannot beat "nothing changes"
+is not adding anything.
 
     uv run python -m modeling.temporal.verify_external
     uv run python -m modeling.temporal.verify_external --year 2024
@@ -36,13 +27,13 @@ import pandas as pd
 import preprocessing
 
 from .. import config as base
+from ..metrics import weighted_metrics
 from . import config as tcfg
 
-#: Where the later-year releases live — outside `data/`, so the thesis build
-#: cannot pick them up by accident.
+# Outside data/, so the thesis build cannot pick these up by accident.
 VERIFICATION_DIR = Path(__file__).resolve().parents[2] / "data_for_verification_temporal"
 
-#: Throwaway database; safe to delete, rebuilt on demand.
+# Throwaway; safe to delete, rebuilt on demand.
 VERIFICATION_DB = Path(__file__).resolve().parents[2] / "verification_external.db"
 
 
@@ -94,21 +85,36 @@ def load_comparison(year: int) -> pd.DataFrame:
 
 
 def _score(actual: np.ndarray, pred: np.ndarray, w: np.ndarray) -> dict:
-    err = pred - actual
-    mean_actual = np.average(actual, weights=w)
+    """Canonical weighted metrics plus the level diagnostics this check needs.
+
+    RMSE/MAE/R2 use the same definition as every table in the thesis, which is
+    the whole point; bias and the two levels are added on top.
+    """
+    m = weighted_metrics(actual, pred, w)
     return {
-        "rmse": float(np.sqrt(np.average(err ** 2, weights=w))),
-        "mae": float(np.average(np.abs(err), weights=w)),
-        "r2": float(1 - np.average(err ** 2, weights=w)
-                    / np.average((actual - mean_actual) ** 2, weights=w)),
-        "bias": float(np.average(err, weights=w)),
-        "actual": float(mean_actual),
+        "rmse": m["rmse"],
+        "mae": m["mae"],
+        "r2": m["r2"],
+        "bias": float(np.average(pred - actual, weights=w)),
+        "actual": float(np.average(actual, weights=w)),
         "predicted": float(np.average(pred, weights=w)),
     }
 
 
+def _score_by(df: pd.DataFrame, by: str) -> pd.DataFrame:
+    """Per-group scores with the percentage level error appended."""
+    out = df.groupby(by).apply(
+        lambda g: pd.Series(_score(g["rate_actual"].to_numpy(),
+                                   g["rate_forecast"].to_numpy(),
+                                   g["iy_actual"].to_numpy())),
+        include_groups=False,
+    )
+    out["bias_%"] = (out["predicted"] / out["actual"] - 1) * 100
+    return out
+
+
 def report(year: int) -> None:
-    """Print the comparison. Information only — nothing downstream reads this."""
+    """Print the comparison. Nothing downstream reads any of it."""
     df = load_comparison(year)
     if df.empty:
         raise SystemExit(f"No matched cells for {year} — is the forecast written?")
@@ -137,13 +143,7 @@ def report(year: int) -> None:
               f"({m['rmse']:,.1f} vs {p['rmse']:,.1f}); "
               f"bias {m['bias']:+,.1f} vs {p['bias']:+,.1f}.")
 
-    by_age = df.groupby("age_group").apply(
-        lambda g: pd.Series(_score(g["rate_actual"].to_numpy(),
-                                   g["rate_forecast"].to_numpy(),
-                                   g["iy_actual"].to_numpy())),
-        include_groups=False,
-    )
-    by_age["bias_%"] = (by_age["predicted"] / by_age["actual"] - 1) * 100
+    by_age = _score_by(df, "age_group")
     print("\nby age group:")
     print(by_age[["actual", "predicted", "rmse", "bias_%"]].round(1).to_string())
 
@@ -152,13 +152,7 @@ def report(year: int) -> None:
         .execute("SELECT DISTINCT postal_code_3, gementee FROM claims").df(),
         on="postal_code_3", how="left",
     ).dropna(subset=["gementee"])
-    gem = by_gem.groupby("gementee").apply(
-        lambda g: pd.Series(_score(g["rate_actual"].to_numpy(),
-                                   g["rate_forecast"].to_numpy(),
-                                   g["iy_actual"].to_numpy())),
-        include_groups=False,
-    )
-    gem["bias_%"] = (gem["predicted"] / gem["actual"] - 1) * 100
+    gem = _score_by(by_gem, "gementee")
     worst = gem.reindex(gem["bias_%"].abs().sort_values(ascending=False).index)
     print("\n10 gemeenten with the largest level error:")
     print(worst.head(10)[["actual", "predicted", "bias_%"]].round(1).to_string())

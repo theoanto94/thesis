@@ -1,32 +1,17 @@
 """Recursive 2024-2030 projection and the DuckDB objects the dashboard reads.
 
-Refits the deployed configuration (``tcfg.DEPLOYED_MODEL`` /
-``tcfg.DEPLOYED_TREATMENT`` — pinned, with the rationale documented on those
-constants; the experiment leaderboard in ``winner.json`` is reported
-alongside) on every available transition through 2023, then rolls forward
-year by year from the 2023 actuals: each year's predicted total rate becomes
-the next year's lag. Population exposure follows the national-growth scenario
-(``POPULATION_GROWTH_RATE`` applied to each cell's 2023 values); predicted
-rates are clipped at zero.
+Refits the deployed config (pinned in config.py, with the reasoning there) on
+every transition through 2023, then rolls forward year by year from the 2023
+actuals — each year's predicted total rate becomes the next year's lag.
+Exposure follows the national growth scenario; rates are clipped at zero.
 
-Only the *total* rate is modelled. Per-category costs on projected rows are
-allocated by each cell's 2023 category shares (composition held constant;
-cells with a zero/missing 2023 total fall back to the national 2023 shares).
-Shares sum to one, so the dashboard's "Total" — the sum of the 23 category
-columns — reproduces the modelled total exactly.
+Only the total rate is modelled. Per-category costs on projected rows are
+allocated by each cell's 2023 shares, so composition is held constant and the
+dashboard's "Total" reproduces the modelled total exactly.
 
-The projected 2023 -> 2030 CAGR is reported next to the realized 2011-2023
-trend as a plausibility diagnostic; it never selects or vetoes a model.
-
-Writes into ``identifier.db``:
-
-* ``claims_forecast`` — one row per 2023 cell x forecast year, mirroring the
-  exact ``claims`` column set (columns the forecast does not produce, e.g.
-  the mental-health sub-components and nominal costs, are NULL).
-* ``claims_extended`` — late-binding view ``claims UNION ALL claims_forecast``
-  with an ``is_projected`` flag; survives ``preprocessing.py`` rebuilds.
-
-Usage::
+Writes claims_forecast (one row per 2023 cell x forecast year, mirroring the
+claims column set with NULLs where the forecast produces nothing) and the
+claims_extended view over both, flagged by is_projected.
 
     uv run python -m modeling.temporal.forecast                 # deployed config
     uv run python -m modeling.temporal.forecast --model lightgbm --treatment no_covid
@@ -54,7 +39,7 @@ from .data import (
 )
 from .experiments import _Persistence, fit
 
-#: claims columns copied unchanged from each cell's 2023 row.
+# Copied unchanged from each cell's 2023 row.
 _CARRIED = ["gender", "postal_code_3", "age_group",
             "gementee", "gementee_code", "latitude", "longitude"]
 
@@ -68,10 +53,9 @@ def load_winner() -> tuple[str, str] | None:
 
 
 def refit(model_key: str, treatment: str):
-    """Refit the winner on all transitions through 2023; persist and return it.
+    """Refit on all transitions through 2023 -> (estimator, lat_med, lon_med).
 
-    Returns ``(estimator, lat_med, lon_med)``. Persistence needs no fit and
-    nothing is persisted for it.
+    Persistence needs no fit, so nothing is persisted for it.
     """
     if model_key == "persistence":
         lat_med, lon_med = train_medians(build_panel(), tcfg.FORECAST_BASE_YEAR)
@@ -87,17 +71,11 @@ def refit(model_key: str, treatment: str):
     return est, ds.lat_med, ds.lon_med
 
 
-# ---------------------------------------------------------------------------
-# Forecast construction
-# ---------------------------------------------------------------------------
-
 def build_forecast(estimator, lat_med: float, lon_med: float) -> pd.DataFrame:
     """Roll the refit winner forward through 2024-2030.
 
-    Base cells are ALL 2023 rows — with a single t-1 lag the seed is 2023
-    itself, so no cell is dropped for incomplete history. Returns one row per
-    cell x forecast year with the carried identifiers, projected exposure,
-    and the predicted total rate (``rate_total``).
+    Every 2023 row is a base cell — with a single t-1 lag the seed is 2023
+    itself, so nothing drops out for incomplete history.
     """
     panel = build_panel()
     base_rows = panel[panel["year"] == tcfg.FORECAST_BASE_YEAR].copy()
@@ -138,9 +116,8 @@ def build_forecast(estimator, lat_med: float, lon_med: float) -> pd.DataFrame:
 def allocate_categories(fc: pd.DataFrame) -> pd.DataFrame:
     """Split each projected total into the 23 categories by 2023 shares.
 
-    Every cell keeps its own 2023 composition; cells whose 2023 total is zero
-    or missing take the national 2023 shares instead. Shares sum to one, so
-    ``sum(costs_<c>_real) == rate_total * insured_years`` per row.
+    Cells whose 2023 total is zero or missing take the national shares. Shares
+    sum to one, so sum(costs_<c>_real) == rate_total * insured_years per row.
     """
     panel = build_panel()
     rows_2023 = panel[panel["year"] == tcfg.FORECAST_BASE_YEAR]
@@ -198,15 +175,10 @@ def summarize(fc: pd.DataFrame, model_key: str, treatment: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# DuckDB writer
-# ---------------------------------------------------------------------------
-
 def write_db(fc: pd.DataFrame) -> None:
     """Create ``claims_forecast`` and the ``claims_extended`` view.
 
-    Opens the database in write mode — the Dash apps hold read-only
-    connections and must be stopped first.
+    Opens the database for writing, so the dashboards must be stopped first.
     """
     try:
         con = duckdb.connect(str(base.DB_PATH))
@@ -256,10 +228,6 @@ def write_db(fc: pd.DataFrame) -> None:
     finally:
         con.close()
 
-
-# ---------------------------------------------------------------------------
-# Orchestration
-# ---------------------------------------------------------------------------
 
 def main(model_key: str | None = None, treatment: str | None = None) -> None:
     """Refit the deployed config, project 2024-2030, allocate, write the DB."""

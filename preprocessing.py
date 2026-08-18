@@ -12,25 +12,23 @@ import pandas as pd
 
 DB_PATH = "identifier.db"
 
-# The claims CSVs that make up the thesis panel. Overridable so a throwaway
-# database can be built over a different set of files (e.g. adding a later year
-# for external validation) without touching the thesis build.
+# The thesis panel. Overridable so a throwaway database can be built over a
+# different set of files without touching the thesis build.
 CLAIMS_GLOB = "data/*_postcode3_en.csv"
 
-# The key columns are read as VARCHAR rather than left to DuckDB's type sniffer.
-# `age_class` holds '90+' alongside plain integers, but Vektis pads the numeric
-# ages to a fixed width in some years and not others: unpadded files look like
-# clean integers for the whole 20,480-row sample, get typed BIGINT, and then fail
-# on the first '90+'. `_aggregate_claims` TRIMs and re-casts these anyway.
+# Forced to VARCHAR rather than left to the type sniffer: age_class holds '90+'
+# alongside plain integers, and in the years Vektis doesn't pad the numeric ages
+# the sample looks like clean BIGINT until the first '90+' blows up.
+# _aggregate_claims TRIMs and re-casts these anyway.
 _KEY_COLUMN_TYPES = {
     "gender": "VARCHAR",
     "age_class": "VARCHAR",
     "postal_code_3": "VARCHAR",
 }
 
-# Maps the raw Dutch Vektis column headers to the English names used throughout
-# this pipeline. Several source values differ by year or are truncated in the
-# 2023 file, so multiple Dutch keys can map to the same English column.
+# Raw Dutch Vektis headers -> the English names used throughout the pipeline.
+# Source names vary by year and are truncated in the 2023 file, so several
+# Dutch keys can map to one English column.
 TRANSLATION_MAP = {
     # Demographic columns
     'geslacht': 'gender',
@@ -129,9 +127,7 @@ def build(
     print(f"Done. Database written to {db_path}")
 
 
-# ---------------------------------------------------------------------------
 # Step 0 – translate raw Vektis headers (Dutch -> English)
-# ---------------------------------------------------------------------------
 
 def _translate_header_line(header: str) -> tuple[str, list[str]]:
     """Translate one semicolon-delimited header line.
@@ -196,9 +192,7 @@ def translate_headers(
     return written
 
 
-# ---------------------------------------------------------------------------
 # Step 1 – raw claims
-# ---------------------------------------------------------------------------
 
 def _load_claims(
     con: duckdb.DuckDBPyConnection,
@@ -206,8 +200,8 @@ def _load_claims(
 ) -> None:
     """Read the claims CSVs into the ``claims`` table.
 
-    ``claims_glob`` is a glob string or a sequence of them; DuckDB unions the
-    matches by name, so year-varying mental-health schemas coexist.
+    DuckDB unions the matches by name, so the year-varying mental-health
+    schemas coexist.
     """
     globs = [claims_glob] if isinstance(claims_glob, str) else list(claims_glob)
     print(f"Loading raw claims from {', '.join(globs)}...")
@@ -216,8 +210,8 @@ def _load_claims(
         CREATE OR REPLACE TABLE claims AS
         SELECT
             *,
-            -- Year comes from the first digit run in the *basename*, so a source
-            -- directory containing digits cannot hijack it.
+            -- From the basename, so a directory with digits in it cannot
+            -- hijack the year.
             CAST(substr(regexp_extract(regexp_extract(filename, '[^/]+$'), '\d+'), 1, 4)
                  AS INTEGER) AS year,
             COALESCE(costs_secondary_mental_health, 0)
@@ -241,9 +235,7 @@ def _load_claims(
     """)
 
 
-# ---------------------------------------------------------------------------
 # Step 2 – CPI index (2020-rebased)
-# ---------------------------------------------------------------------------
 
 def _load_cpi(con: duckdb.DuckDBPyConnection) -> None:
     print("Loading CPI...")
@@ -277,9 +269,7 @@ def _load_cpi(con: duckdb.DuckDBPyConnection) -> None:
     """)
 
 
-# ---------------------------------------------------------------------------
 # Step 3 – postcode → municipality lookup
-# ---------------------------------------------------------------------------
 
 def _load_postcodes(con: duckdb.DuckDBPyConnection) -> None:
     print("Loading postcodes...")
@@ -310,9 +300,7 @@ def _load_postcodes(con: duckdb.DuckDBPyConnection) -> None:
     """)
 
 
-# ---------------------------------------------------------------------------
 # Step 4 – Gebieden → gementee_code lookup
-# ---------------------------------------------------------------------------
 
 def _norm_gebieden(name: str) -> str:
     name = re.sub(r'\s*\([A-Za-z\.\s]{1,15}\)\s*$', '', name.strip())
@@ -326,8 +314,7 @@ def _norm_nl(name: str) -> str:
     return name.rstrip('.').strip()
 
 
-# Gementee names in NL_full that cannot be resolved by normalization alone.
-# Value is the GM code to assign.
+# NL_full names that normalization alone cannot resolve.
 _OVERRIDES: dict = {
     'Bergen':                    'GM0373',  # Bergen (NH.), North Holland
     'Bergen Municipality':       'GM0893',  # Bergen (L.), Limburg
@@ -340,7 +327,7 @@ _OVERRIDES: dict = {
     'Hoogland Municipality':     'GM0307',  # dissolved into Amersfoort
 }
 
-# Source names that should appear under a different display name in the output.
+# Source name -> display name in the output.
 _RENAMES: dict[str, str] = {
     'Hoogland Municipality': 'Amersfoort Municipality',
 }
@@ -395,9 +382,7 @@ def _load_gebieden(con: duckdb.DuckDBPyConnection) -> None:
     con.execute("CREATE OR REPLACE TABLE gementee_lookup AS SELECT * FROM _df_lookup")
 
 
-# ---------------------------------------------------------------------------
 # Step 5 – remove null-gender rows
-# ---------------------------------------------------------------------------
 
 def _clean_claims(con: duckdb.DuckDBPyConnection) -> None:
     print("Cleaning claims...")
@@ -408,9 +393,7 @@ def _clean_claims(con: duckdb.DuckDBPyConnection) -> None:
     """)
 
 
-# ---------------------------------------------------------------------------
 # Step 6 – aggregate to 5-year age bands and apply CPI deflation
-# ---------------------------------------------------------------------------
 
 def _aggregate_claims(con: duckdb.DuckDBPyConnection) -> None:
     print("Aggregating and deflating claims...")
@@ -502,9 +485,7 @@ def _aggregate_claims(con: duckdb.DuckDBPyConnection) -> None:
     """)
 
 
-# ---------------------------------------------------------------------------
 # Step 7 – enrich claims with gementee, gementee_code, and coordinates
-# ---------------------------------------------------------------------------
 
 def _enrich_claims(con: duckdb.DuckDBPyConnection) -> None:
     print("Enriching claims with municipality and coordinates...")
@@ -532,7 +513,6 @@ def _enrich_claims(con: duckdb.DuckDBPyConnection) -> None:
     print(f"  claims table: {row_count:,} rows")
 
 
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     # Usage:

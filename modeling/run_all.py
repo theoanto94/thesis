@@ -1,14 +1,5 @@
-"""One-shot orchestration for the full Phase 2 pipeline.
-
-Runs, in order:
-
-1. ``tune``    — grid-search every tunable model on the total target (K=5 CV).
-2. ``train``   — refit every base model on all 24 targets with tuned params.
-3. ``stacking``— build OOF predictions + the Ridge meta-learner per target.
-4. ``evaluate``— predict the held-out 2021-2023 set once and write all
-   dashboard artifacts (predictions, metrics, learning curves, timings).
-
-Usage::
+"""One-shot orchestration for the full Phase 2 pipeline: tune, train, stack,
+evaluate.
 
     uv run python -m modeling.run_all
 """

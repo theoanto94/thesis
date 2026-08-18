@@ -1,28 +1,16 @@
 """The COVID-treatment experiment: fit, recursive evaluation, winner selection.
 
-One experimental question — does removing the COVID target years (2020, 2021)
-from training improve forecasts? — answered on a fixed grid:
+Seven configs — persistence, plus three fitted models under each of the two
+treatments — evaluated under two recursive protocols, where each year's
+prediction feeds the next year's lag just as the 2024-2030 projection does:
 
-* Models: persistence (last observed rate carried forward), Ridge, LightGBM,
-  XGBoost. Fitted models reuse their Phase 2 tuned hyperparameters
-  (``artifacts/params/<model>.json``); persistence has none.
-* Treatments: ``base`` (train target years 2012-2020) vs ``no_covid``
-  (2020 and 2021 dropped). 7 fits total: 3 models x 2 treatments + none.
-* Protocols (both recursive — each year's prediction feeds the next year's
-  lag, exactly as the 2024-2030 projection operates):
+  structural_mirror  seed from actual 2020, predict 2021 -> 2022 -> 2023,
+                     mirroring the Phase 2 split. Base treatment only.
+  head_to_head       seed from actual 2021, predict 2022 -> 2023, identical
+                     for every candidate, so only the training set differs.
 
-  - **structural_mirror** (headline, base treatment + persistence): seed from
-    actual 2020, predict 2021 -> 2022 -> 2023. Mirrors the Phase 2 split.
-  - **head_to_head** (winner selection): seed from actual 2021, predict
-    2022 -> 2023, identical for every candidate — only the training set
-    differs, which isolates the treatment effect. 2021 itself is excluded
-    from scoring per the COVID-removal scenario.
-
-Every protocol scores the same ~29k entities (observed 2020-2023 without
-gaps), insured_years-weighted. Winner = lowest weighted RMSE on the
-head-to-head protocol; written to ``winner.json`` with the full leaderboard.
-
-Usage::
+Both score the same entities, insured-years-weighted. The head-to-head RMSE
+picks the winner, written to winner.json with the full leaderboard.
 
     uv run python -m modeling.temporal.experiments
 """
@@ -34,25 +22,14 @@ import time
 
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMRegressor
-from sklearn.compose import ColumnTransformer
-from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import (
-    OneHotEncoder,
-    OrdinalEncoder,
-    StandardScaler,
-    TargetEncoder,
-)
-from xgboost import XGBRegressor
 
-from .. import config as base
+from .. import config as base, factory
 from ..factory import apply_best_params
 from ..metrics import METRIC_NAMES, weighted_metrics
 from ..tune import load_best_params
 from . import config as tcfg
 from .data import (
-    META_COLUMNS,
     RATE_COL,
     TemporalDataset,
     build_panel,
@@ -64,91 +41,29 @@ from .data import (
     train_medians,
 )
 
-#: model key -> encoder family (all fitted models are sklearn Pipelines).
-_FAMILY = {"ridge": "linear", "lightgbm": "tree", "xgboost": "tree"}
-
-#: Protocol names as they appear in the metrics table.
 PROTOCOL_MIRROR = "structural_mirror"
 PROTOCOL_H2H = "head_to_head"
 
-
-# ---------------------------------------------------------------------------
-# Estimators
-# ---------------------------------------------------------------------------
-
-def make_preprocessor(family: str) -> ColumnTransformer:
-    """Phase 2 preprocessor with the lag column added to the numerics.
-
-    Standalone rather than reusing ``encoders.make_preprocessor``, which
-    hard-codes ``config.NUMERIC_FEATURES`` (remainder="drop") and would
-    silently drop the lag feature. ``"linear"``: target-encode+scale
-    postcode3, one-hot age/gender, scale all numerics (structural + lag).
-    ``"tree"``: ordinal-encode categoricals, pass numerics through.
-    """
-    numeric = base.NUMERIC_FEATURES + [tcfg.LAG_COL]
-    if family == "linear":
-        geo_pipe = Pipeline([
-            ("target", TargetEncoder(smooth="auto", random_state=base.RANDOM_STATE)),
-            ("scale", StandardScaler()),
-        ])
-        return ColumnTransformer(
-            transformers=[
-                ("geo_target", geo_pipe, base.HIGH_CARD_FEATURES),
-                (
-                    "cat_ohe",
-                    OneHotEncoder(drop="first", handle_unknown="ignore",
-                                  sparse_output=False),
-                    base.LOW_CARD_FEATURES,
-                ),
-                ("num_scale", StandardScaler(), numeric),
-            ],
-            remainder="drop",
-        )
-    if family == "tree":
-        return ColumnTransformer(
-            transformers=[
-                (
-                    "cat_ordinal",
-                    OrdinalEncoder(handle_unknown="use_encoded_value",
-                                   unknown_value=-1),
-                    base.CATEGORICAL_FEATURES,
-                ),
-                ("num_pass", "passthrough", numeric),
-            ],
-            remainder="drop",
-        )
-    raise ValueError(f"Unknown encoder family {family!r}")
-
-
-def _raw_estimator(model_key: str, params: dict):
-    """Bare estimator with the given hyperparameters (Phase 2 constructors)."""
-    if model_key == "ridge":
-        return Ridge(random_state=base.RANDOM_STATE, **params)
-    if model_key == "lightgbm":
-        return LGBMRegressor(random_state=base.RANDOM_STATE, n_jobs=-1,
-                             verbosity=-1, **params)
-    if model_key == "xgboost":
-        return XGBRegressor(random_state=base.RANDOM_STATE, n_jobs=-1,
-                            tree_method="hist", objective="reg:squarederror",
-                            **params)
-    raise ValueError(f"Unknown temporal model {model_key!r}")
+# Passed to factory.build so the shared preprocessor keeps the lag instead of
+# dropping it as an undeclared column.
+NUMERIC_FEATURES = base.NUMERIC_FEATURES + [tcfg.LAG_COL]
 
 
 def build(model_key: str) -> Pipeline:
-    """Unfitted Pipeline (lag-aware preprocessor + Phase 2 tuned estimator)."""
+    """Unfitted Pipeline (lag-aware preprocessor + Phase 2 tuned estimator).
+
+    Goes through factory.build, so the lag column is the only difference
+    between the two tracks.
+    """
     params = apply_best_params(model_key, load_best_params(model_key))
-    return Pipeline([
-        ("pre", make_preprocessor(_FAMILY[model_key])),
-        ("model", _raw_estimator(model_key, params)),
-    ])
+    return factory.build(model_key, params, numeric_features=NUMERIC_FEATURES)
 
 
 class _Persistence:
     """Carries the incoming lag forward unchanged: prediction = last rate.
 
-    Run through the same recursive loop as the fitted models, its own output
-    feeds its own lag, so at step k the prediction is the seed-year actual —
-    the classic random-walk floor.
+    In the recursive loop its own output feeds its own lag, so at every step
+    the prediction is the seed-year actual — the random-walk floor.
     """
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
@@ -159,13 +74,9 @@ def fit(model_key: str, ds: TemporalDataset) -> tuple[Pipeline, float]:
     """Fit one (model, treatment) config; returns (pipeline, seconds)."""
     est = build(model_key)
     t0 = time.perf_counter()
-    est.fit(ds.X_train, ds.y_train, model__sample_weight=ds.w_train)
+    factory.fit(est, ds.X_train, ds.y_train, ds.w_train)
     return est, time.perf_counter() - t0
 
-
-# ---------------------------------------------------------------------------
-# Recursive evaluation
-# ---------------------------------------------------------------------------
 
 def recursive_predict(
     estimator,
@@ -176,11 +87,8 @@ def recursive_predict(
 ) -> pd.DataFrame:
     """Roll *estimator* through *eval_years*, feeding predictions forward.
 
-    The chain is seeded with the actual *seed_year* rates of the common
-    evaluation entities; from the second scored year on, the lag input is the
-    estimator's own previous prediction (clipped at zero), exactly as the
-    2024-2030 projection operates. Returns one long frame with the meta
-    columns, ``y_true``, ``y_pred``, ``weight``, and ``recursion_step``.
+    Seeded with the actual *seed_year* rates; from the second scored year on
+    the lag is the estimator's own previous prediction, clipped at zero.
     """
     panel = build_panel()
     entities = eval_entities()
@@ -198,7 +106,7 @@ def recursive_predict(
         y_pred = np.clip(estimator.predict(X), 0.0, None)
         history = pd.Series(y_pred, index=entity_index(rows))
 
-        block = rows[META_COLUMNS].copy()
+        block = rows[base.META_COLUMNS].copy()
         block["y_true"] = rows[RATE_COL].to_numpy(dtype=float)
         block["y_pred"] = y_pred
         block["weight"] = rows[base.WEIGHT_COLUMN].to_numpy(dtype=float)
@@ -222,10 +130,6 @@ def score(pred: pd.DataFrame) -> list[dict]:
         })
     return records
 
-
-# ---------------------------------------------------------------------------
-# The experiment matrix
-# ---------------------------------------------------------------------------
 
 def _assert_protocol_ok(train_years: set[int], eval_years: tuple[int, ...]) -> None:
     """Scored years must never have been training targets."""
@@ -257,7 +161,6 @@ def run_matrix() -> pd.DataFrame:
                 "train_seconds": seconds, **rec,
             })
 
-    # Persistence: no training set, both protocols.
     persistence = _Persistence()
     add(PROTOCOL_MIRROR, "none", "persistence", persistence, None, 0.0)
     add(PROTOCOL_H2H, "none", "persistence", persistence, None, 0.0)
@@ -280,8 +183,8 @@ def run_matrix() -> pd.DataFrame:
 def select_winner(metrics: pd.DataFrame) -> dict:
     """Rank on head-to-head weighted RMSE; the argmin is the winner.
 
-    Persistence sits in the leaderboard as the honest floor — if it wins,
-    that is the result, and the forecast degenerates to a carry-forward.
+    Persistence sits in the leaderboard as the honest floor. If it wins, that
+    is the result and the forecast degenerates to a carry-forward.
     """
     board = (
         metrics[(metrics["protocol"] == PROTOCOL_H2H) & (metrics["year"] == "all")]
