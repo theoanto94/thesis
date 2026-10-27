@@ -3,7 +3,8 @@
 Refits the deployed config (pinned in config.py, with the reasoning there) on
 every transition through 2023, then rolls forward year by year from the 2023
 actuals — each year's predicted total rate becomes the next year's lag.
-Exposure follows the national growth scenario; rates are clipped at zero.
+Exposure follows the CBS age x sex population forecast (population.py), so
+the age mix ages; rates are clipped at zero.
 
 Only the total rate is modelled. Per-category costs on projected rows are
 allocated by each cell's 2023 shares, so composition is held constant and the
@@ -38,6 +39,7 @@ from .data import (
     train_medians,
 )
 from .experiments import _Persistence, fit
+from .population import exposure_factor
 
 # Copied unchanged from each cell's 2023 row.
 _CARRIED = ["gender", "postal_code_3", "age_group",
@@ -71,25 +73,29 @@ def refit(model_key: str, treatment: str):
     return est, ds.lat_med, ds.lon_med
 
 
-def build_forecast(estimator, lat_med: float, lon_med: float) -> pd.DataFrame:
-    """Roll the refit winner forward through 2024-2030.
+def build_forecast(estimator, lat_med: float, lon_med: float,
+                   scenario: str = tcfg.EXPOSURE_SCENARIO) -> pd.DataFrame:
+    """Roll the refit winner forward through 2024-2030 under an exposure *scenario*.
 
     Every 2023 row is a base cell — with a single t-1 lag the seed is 2023
-    itself, so nothing drops out for incomplete history.
+    itself, so nothing drops out for incomplete history. Each cell's 2023
+    insured_years and number_of_insured are multiplied by its scenario factor
+    (population.exposure_factor); every other input is carried from 2023,
+    ``year`` is set to the forecast year and the lag is last year's prediction.
     """
     panel = build_panel()
     base_rows = panel[panel["year"] == tcfg.FORECAST_BASE_YEAR].copy()
     ent = entity_index(base_rows)
     history = rates_for_year(panel, tcfg.FORECAST_BASE_YEAR).reindex(ent)
     assert not history.isnull().any(), "Missing 2023 seed rates"
-    print(f"Forecast base: {len(base_rows):,} 2023 cells")
+    print(f"Forecast base: {len(base_rows):,} 2023 cells, exposure scenario {scenario!r}")
 
     iy_2023 = base_rows[base.WEIGHT_COLUMN].to_numpy(dtype=float)
     n_ins_2023 = base_rows["number_of_insured"].to_numpy(dtype=float)
 
     out: list[pd.DataFrame] = []
     for h in tcfg.FORECAST_YEARS:
-        factor = (1.0 + tcfg.POPULATION_GROWTH_RATE) ** (h - tcfg.FORECAST_BASE_YEAR)
+        factor = exposure_factor(base_rows, h, scenario)
         work = base_rows.copy()
         work["year"] = h
         work["insured_years"] = iy_2023 * factor
@@ -156,22 +162,33 @@ def projected_cagr(fc: pd.DataFrame) -> float:
     return (rate_last / rate_2023) ** (1.0 / (last_year - tcfg.FORECAST_BASE_YEAR)) - 1.0
 
 
-def summarize(fc: pd.DataFrame, model_key: str, treatment: str) -> dict:
-    """National projected rate by year plus the CAGR diagnostic."""
-    by_year = {
-        int(y): round(float(np.average(g["rate_total"], weights=g["insured_years"])), 2)
-        for y, g in fc.groupby("year")
+def _paths(fc: pd.DataFrame) -> dict:
+    """National rate, insured-years and total real cost (€bn) per year."""
+    g = fc.assign(_cost=fc["rate_total"] * fc["insured_years"]).groupby("year")
+    return {
+        "national_rate_by_year": {int(y): round(float(v), 2) for y, v in
+                                  (g["_cost"].sum() / g["insured_years"].sum()).items()},
+        "insured_years_m_by_year": {int(y): round(float(v) / 1e6, 4) for y, v in
+                                    g["insured_years"].sum().items()},
+        "total_cost_bn_by_year": {int(y): round(float(v) / 1e9, 3) for y, v in
+                                  g["_cost"].sum().items()},
     }
+
+
+def summarize(fc: pd.DataFrame, model_key: str, treatment: str) -> dict:
+    """The deployed national paths and the CAGR diagnostic."""
     cagr = projected_cagr(fc)
-    print(f"\nProjected 2023-2030 CAGR: {cagr:+.2%} "
-          f"(realized 2011-2023: {tcfg.REALIZED_CAGR:+.2%}) — reported "
-          "diagnostic, not a selection rule")
+    print(f"\nProjected 2023-2030 CAGR: {cagr:+.2%}; realized 2011-2023: "
+          f"{tcfg.REALIZED_CAGR:+.2%} (fixed basket {tcfg.REALIZED_CAGR_FIXED_BASKET:+.2%}) "
+          "— reported diagnostic, not a selection rule")
     return {
         "model": model_key,
         "treatment": treatment,
-        "national_rate_by_year": by_year,
+        "exposure_scenario": tcfg.EXPOSURE_SCENARIO,
+        **_paths(fc),
         "projected_cagr_2023_2030": round(float(cagr), 5),
         "realized_cagr_2011_2023": tcfg.REALIZED_CAGR,
+        "realized_cagr_2011_2023_fixed_basket": tcfg.REALIZED_CAGR_FIXED_BASKET,
     }
 
 
@@ -240,7 +257,7 @@ def main(model_key: str | None = None, treatment: str | None = None) -> None:
               "deployment overrides it on trend plausibility (see config.py)")
 
     estimator, lat_med, lon_med = refit(model_key, treatment)
-    fc = build_forecast(estimator, lat_med, lon_med)
+    fc = build_forecast(estimator, lat_med, lon_med, tcfg.EXPOSURE_SCENARIO)
     fc = allocate_categories(fc)
 
     tcfg.ensure_dirs()

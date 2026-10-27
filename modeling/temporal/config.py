@@ -72,18 +72,23 @@ EVAL_HISTORY_YEARS: tuple[int, ...] = tuple(
 FORECAST_YEARS: range = range(2024, 2031)
 FORECAST_BASE_YEAR: int = 2023
 
-# CBS national trend, applied uniformly to every cell's 2023 exposure so the
-# projections isolate cost-rate dynamics from local demographic shifts.
-POPULATION_GROWTH_RATE: float = 0.006
+# Exposure path of each 2023 cell (see population.py). The deployed
+# projection grows every (age band x gender) by its own CBS kernprognose
+# factor, so the age mix ages as CBS projects.
+EXPOSURE_SCENARIO: str = "cbs_age_sex"
 
 # Realized 2011-2023 CAGR of the national real rate, reported beside the
-# projected CAGR as a plausibility check — never a gating rule.
+# projected CAGR as a plausibility check — never a gating rule. Part of it is
+# coverage, not growth: on the categories present in every year it is +1.23%
+# (modeling.coverage_audit, artifacts/coverage/growth.json).
 REALIZED_CAGR: float = 0.0210
+REALIZED_CAGR_FIXED_BASKET: float = 0.0123
 
 # Pinned rather than taken from the leaderboard. The accuracy leader
 # (LightGBM/no_covid, RMSE €453) saturates under recursion — trees cannot
-# predict above the training cost levels, giving a +0.34%/yr projected CAGR
-# against a realized +2.10%. Ridge/base is 3.4% worse on RMSE but extrapolates
+# predict above the training cost levels, giving a +0.89%/yr projected CAGR
+# under the CBS age x sex exposure (+0.34%/yr at a constant age mix) against a
+# realized +2.10%. Ridge/base is 3.4% worse on RMSE but extrapolates
 # a plausible growth path. Both configs are reported in the experiments.
 DEPLOYED_MODEL: str = "ridge"
 DEPLOYED_TREATMENT: str = "base"
@@ -96,8 +101,11 @@ TEMPORAL_DIR = base.ARTIFACTS / "temporal"
 T_METRICS_DIR = TEMPORAL_DIR / "metrics"
 T_MODELS_DIR = TEMPORAL_DIR / "models"
 T_FORECAST_DIR = TEMPORAL_DIR / "forecast"
+# Row-level recursive predictions, one file per (protocol, treatment, model);
+# read by evaluate_extra.py for bootstrap intervals and per-year bias.
+T_PREDICTIONS_DIR = TEMPORAL_DIR / "predictions"
 
-_ALL_DIRS = (TEMPORAL_DIR, T_METRICS_DIR, T_MODELS_DIR, T_FORECAST_DIR)
+_ALL_DIRS = (TEMPORAL_DIR, T_METRICS_DIR, T_MODELS_DIR, T_FORECAST_DIR, T_PREDICTIONS_DIR)
 
 EXPERIMENTS_PATH = T_METRICS_DIR / "experiments.parquet"
 WINNER_PATH = T_METRICS_DIR / "winner.json"
@@ -109,6 +117,11 @@ def ensure_dirs() -> None:
     """Create the temporal artifact directory tree if it does not exist."""
     for d in _ALL_DIRS:
         d.mkdir(parents=True, exist_ok=True)
+
+
+def prediction_path(protocol: str, treatment: str, model_key: str):
+    """Row-level recursive predictions of one evaluated config."""
+    return T_PREDICTIONS_DIR / f"{protocol}__{treatment}__{model_key}.parquet"
 
 
 def final_model_path(model_key: str, treatment: str):

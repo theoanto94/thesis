@@ -153,6 +153,7 @@ def run_matrix() -> pd.DataFrame:
             (ds.lat_med, ds.lon_med) if ds is not None else default_medians
         )
         pred = recursive_predict(estimator, years, seed, lat_med, lon_med)
+        pred.to_parquet(tcfg.prediction_path(protocol, treatment, model_key), index=False)
         for rec in score(pred):
             records.append({
                 "protocol": protocol, "treatment": treatment,
