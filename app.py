@@ -158,6 +158,7 @@ def _quote(s: str) -> str:
 
 
 def build_where(f: dict, extra: Optional[list] = None) -> str:
+    """SQL WHERE clause for the shared filter state, plus any *extra* clauses."""
     clauses = [f"year BETWEEN {f['year_min']} AND {f['year_max']}"]
     if f.get("gender") and f["gender"] != "ALL":
         clauses.append(f"gender = {_quote(f['gender'])}")
@@ -173,10 +174,12 @@ def build_where(f: dict, extra: Optional[list] = None) -> str:
 
 
 def cost_expr(category: str) -> str:
+    """SQL expression for the selected cost category (all categories summed for 'ALL')."""
     return TOTAL_EXPR if category == "ALL" else f"COALESCE({category}, 0)"
 
 
 def category_label(category: str) -> str:
+    """Human-readable label of a cost column."""
     for label, col in COST_CATEGORIES.items():
         if col == category:
             return label
@@ -265,6 +268,7 @@ def add_split_line_trace(fig, df, y_col: str, name: str, color: str,
 
 
 def style(fig, **overrides):
+    """Apply the shared Plotly layout (with *overrides*) and axis styling."""
     layout = {**PLOTLY_LAYOUT, **overrides}
     fig.update_layout(**layout)
     fig.update_xaxes(showgrid=False)
@@ -273,6 +277,7 @@ def style(fig, **overrides):
 
 
 def empty_fig(message: str = "No data for current filters") -> go.Figure:
+    """Blank figure carrying a centred *message*."""
     fig = go.Figure()
     fig.add_annotation(text=message, x=0.5, y=0.5, xref="paper", yref="paper",
                        showarrow=False, font=dict(size=14, color=PALETTE["muted"]))
@@ -282,22 +287,31 @@ def empty_fig(message: str = "No data for current filters") -> go.Figure:
 
 
 def fmt_eur(n: float) -> str:
+    """Format a euro amount with a B/M/K suffix for the KPI cards."""
     n = float(n or 0)
-    if n >= 1e9: return f"€{n/1e9:,.2f} B"
-    if n >= 1e6: return f"€{n/1e6:,.1f} M"
-    if n >= 1e3: return f"€{n/1e3:,.0f} K"
+    if n >= 1e9:
+        return f"€{n/1e9:,.2f} B"
+    if n >= 1e6:
+        return f"€{n/1e6:,.1f} M"
+    if n >= 1e3:
+        return f"€{n/1e3:,.0f} K"
     return f"€{n:,.0f}"
 
 
 def fmt_num(n: float) -> str:
+    """Format a count with a B/M/K suffix for the KPI cards."""
     n = float(n or 0)
-    if n >= 1e9: return f"{n/1e9:,.2f} B"
-    if n >= 1e6: return f"{n/1e6:,.2f} M"
-    if n >= 1e3: return f"{n/1e3:,.1f} K"
+    if n >= 1e9:
+        return f"{n/1e9:,.2f} B"
+    if n >= 1e6:
+        return f"{n/1e6:,.2f} M"
+    if n >= 1e3:
+        return f"{n/1e3:,.1f} K"
     return f"{n:,.0f}"
 
 
 def kpi_card(label: str, value: str, subtitle: str = "", emphasize: bool = True) -> dbc.Card:
+    """Card for one KPI in the summary strip."""
     value_style = {
         "color": PALETTE["primary"],
         "fontSize": "30px" if emphasize else "18px",
@@ -316,6 +330,7 @@ def kpi_card(label: str, value: str, subtitle: str = "", emphasize: bool = True)
 # Layout
 
 def header() -> html.Header:
+    """Page header; the subtitle mentions the projected years when a forecast exists."""
     if HAS_FORECAST:
         subtitle = (f"Insured-population claims · PC3 resolution · "
                     f"{YEARS[0]}–{ACTUAL_MAX_YEAR} actual · "
@@ -371,6 +386,7 @@ def _year_marks() -> dict:
 
 
 def filter_bar() -> dbc.Card:
+    """Persistent top bar holding the global filters."""
     return dbc.Card(
         dbc.CardBody([
             dbc.Row([
@@ -432,6 +448,7 @@ def filter_bar() -> dbc.Card:
 
 
 def graph_card(title: str, graph_id: str, height: int = 380, extra_header=None) -> dbc.Card:
+    """Card wrapping one chart, with an optional control in its header."""
     header_children = [html.Span(title, className="fw-semibold")]
     if extra_header is not None:
         header_children.append(extra_header)
@@ -446,6 +463,7 @@ def graph_card(title: str, graph_id: str, height: int = 380, extra_header=None) 
 
 
 def table_card(title: str, table_id: str) -> dbc.Card:
+    """Card wrapping one table."""
     return dbc.Card([
         dbc.CardHeader(html.Span(title, className="fw-semibold"),
                        style={"backgroundColor": PALETTE["card"], "borderBottom": f"1px solid {PALETTE['grid']}"}),
@@ -454,6 +472,7 @@ def table_card(title: str, table_id: str) -> dbc.Card:
 
 
 def tab_temporal() -> dbc.Container:
+    """Layout of Tab 1 (temporal trends)."""
     return dbc.Container([
         dbc.Row([
             dbc.Col(graph_card("1.1 · Real cost per insured year over time", "chart-1-1"),
@@ -475,6 +494,7 @@ def tab_temporal() -> dbc.Container:
 
 
 def tab_demographics() -> dbc.Container:
+    """Layout of Tab 2 (demographics), including its year selector."""
     year_selector = html.Div([
         html.Span("Year:", className="small text-muted me-2"),
         dcc.Dropdown(
@@ -507,6 +527,7 @@ def tab_demographics() -> dbc.Container:
 
 
 def tab_geographic() -> dbc.Container:
+    """Layout of Tab 3 (geographic)."""
     return dbc.Container([
         dbc.Row([
             dbc.Col(graph_card("3.1 · Real cost per insured year by gemeente", "chart-3-1", height=620),
@@ -570,6 +591,7 @@ app.layout = html.Div([
     Input("f-gementee", "value"),
 )
 def update_filter_store(years, gender, age_groups, category, gementees):
+    """Collect the filter controls into the shared filter store."""
     return {
         "year_min":   years[0],
         "year_max":   years[1],
@@ -584,6 +606,7 @@ def update_filter_store(years, gender, age_groups, category, gementees):
 
 @app.callback(Output("kpi-strip", "children"), Input("filter-store", "data"))
 def kpi_strip(f):
+    """KPI cards (total cost, insured years, cost rate, top category) for the active filters."""
     if not f:
         return None
     cat_sums = ",\n        ".join(f"SUM(COALESCE({c}, 0)) AS {c}" for c in COST_COLUMNS)
@@ -624,6 +647,7 @@ def kpi_strip(f):
 
 @app.callback(Output("chart-1-1", "figure"), Input("filter-store", "data"))
 def chart_1_1(f):
+    """1.1 Real cost per insured year over time."""
     if not f:
         return empty_fig()
     sql = f"""
@@ -653,6 +677,7 @@ def chart_1_1(f):
 
 @app.callback(Output("chart-1-2", "figure"), Input("filter-store", "data"))
 def chart_1_2(f):
+    """1.3 Real cost per insured year, stacked by care category."""
     if not f:
         return empty_fig()
     select_cols = ",\n        ".join(
@@ -690,6 +715,7 @@ def chart_1_2(f):
 
 @app.callback(Output("chart-1-3", "figure"), Input("filter-store", "data"))
 def chart_1_3(f):
+    """1.4 Year-on-year growth of the real cost rate."""
     if not f:
         return empty_fig()
     sql = f"""
@@ -735,6 +761,7 @@ def chart_1_3(f):
 
 @app.callback(Output("chart-1-total", "figure"), Input("filter-store", "data"))
 def chart_1_total(f):
+    """1.2 Total real cost per year."""
     if not f:
         return empty_fig()
     sql = f"""
@@ -779,6 +806,7 @@ def chart_1_total(f):
 
 @app.callback(Output("chart-1-catgrowth", "figure"), Input("filter-store", "data"))
 def chart_1_catgrowth(f):
+    """1.5 Growth of each care category over the selected year range."""
     if not f:
         return empty_fig()
     if f["year_min"] == f["year_max"]:
@@ -831,6 +859,7 @@ def chart_1_catgrowth(f):
 
 @app.callback(Output("chart-2-1", "figure"), Input("filter-store", "data"))
 def chart_2_1(f):
+    """2.1 Heatmap of the real cost rate by age band and year."""
     if not f:
         return empty_fig()
     # Show all bands regardless of the age filter.
@@ -877,6 +906,7 @@ def chart_2_1(f):
 
 @app.callback(Output("chart-2-2", "figure"), Input("filter-store", "data"))
 def chart_2_2(f):
+    """2.2 Real cost rate over time, one line per gender."""
     if not f:
         return empty_fig()
     # Both lines, whatever the gender filter says.
@@ -917,6 +947,7 @@ def chart_2_2(f):
     Input("age-grad-year", "value"),
 )
 def chart_2_3(f, year):
+    """2.3 Real cost rate by age band for the selected *year*."""
     if not f or year is None:
         return empty_fig()
     # The gradient covers every band for the picked year.
@@ -956,6 +987,7 @@ def chart_2_3(f, year):
 
 @app.callback(Output("chart-2-concentration", "figure"), Input("filter-store", "data"))
 def chart_2_concentration(f):
+    """2.4 Share of total real cost by age band."""
     if not f:
         return empty_fig()
     f2 = {**f, "age_groups": []}
@@ -999,6 +1031,7 @@ def chart_2_concentration(f):
 
 @app.callback(Output("chart-3-1", "figure"), Input("filter-store", "data"))
 def chart_3_1(f):
+    """3.1 Choropleth of the real cost rate by gemeente."""
     if not f:
         return empty_fig()
     if GEOJSON is None:
@@ -1048,6 +1081,7 @@ def chart_3_1(f):
 
 @app.callback(Output("chart-3-2", "figure"), Input("filter-store", "data"))
 def chart_3_2(f):
+    """3.2 PC3 points sized by insured years and coloured by cost rate."""
     if not f:
         return empty_fig()
     sql = f"""
@@ -1091,6 +1125,7 @@ def chart_3_2(f):
 
 @app.callback(Output("table-3-3", "children"), Input("filter-store", "data"))
 def table_3_3(f):
+    """3.3 Top and bottom 10 gemeenten by real cost rate."""
     if not f:
         return None
     sql = f"""
@@ -1164,6 +1199,7 @@ def table_3_3(f):
 
 @app.callback(Output("chart-3-distribution", "figure"), Input("filter-store", "data"))
 def chart_3_distribution(f):
+    """3.4 Distribution of the real cost rate across gemeenten."""
     if not f:
         return empty_fig()
     sql = f"""

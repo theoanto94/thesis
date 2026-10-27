@@ -13,6 +13,7 @@ from . import experiments, forecast
 
 
 def main() -> None:
+    """Run the temporal experiments, then the 2024-2030 forecast."""
     print("=" * 70)
     print("Stage 1/2 — COVID-treatment experiments (7 configs, recursive eval)")
     print("=" * 70)

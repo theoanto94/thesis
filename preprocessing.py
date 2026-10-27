@@ -1,3 +1,17 @@
+"""Build ``identifier.db`` (DuckDB) from the yearly Vektis postcode3 CSVs.
+
+Step 0 (optional) translates the Dutch Vektis headers to the English names
+used everywhere else (``TRANSLATION_MAP``). The build then loads the claims,
+the CBS health CPI, the postcode and municipality lookups, drops null-gender
+rows, aggregates to 5-year age bands, deflates every cost to 2020 euros
+(``costs_*_real``) and adds the municipality and coordinates.
+
+    uv run python preprocessing.py [db_path]
+    uv run python preprocessing.py translate <src_glob> [out_dir]
+    uv run python preprocessing.py build-from <src_glob> [db_path]
+    uv run python preprocessing.py build-glob <db_path> <glob> [<glob> ...]
+"""
+
 from __future__ import annotations
 
 import csv

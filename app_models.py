@@ -79,6 +79,7 @@ def load_timings() -> pd.DataFrame:
 
 
 def load_learning_curve(model_key: str) -> pd.DataFrame:
+    """Saved train/CV learning curve of *model_key* (empty if missing)."""
     return _read_parquet(config.LEARNING_CURVES_DIR / f"{model_key}.parquet")
 
 
@@ -162,6 +163,7 @@ def available_models() -> list[str]:
 
 
 def available_regions() -> list[str]:
+    """Gemeenten present in the saved test predictions, for the region filter."""
     ov_model = available_models()[0]
     preds = load_predictions(ov_model)
     if preds.empty:
@@ -172,6 +174,7 @@ def available_regions() -> list[str]:
 # Plot helpers
 
 def style(fig, **overrides):
+    """Apply the shared Plotly layout (with *overrides*) and axis styling."""
     fig.update_layout(**{**PLOTLY_LAYOUT, **overrides})
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(gridcolor=PALETTE["grid"], zerolinecolor=PALETTE["grid"])
@@ -179,6 +182,7 @@ def style(fig, **overrides):
 
 
 def empty_fig(message: str = "No data for current filters") -> go.Figure:
+    """Blank figure carrying a centred *message*."""
     fig = go.Figure()
     fig.add_annotation(text=message, x=0.5, y=0.5, xref="paper", yref="paper",
                        showarrow=False, font=dict(size=14, color=PALETTE["muted"]))
@@ -217,6 +221,7 @@ def _target_options():
 
 
 def filter_bar() -> dbc.Card:
+    """Persistent top bar holding the global filters."""
     models = available_models()
     regions = available_regions()
     age_opts = [{"label": a, "value": a} for a in sorted(
@@ -253,6 +258,7 @@ def filter_bar() -> dbc.Card:
 
 
 def header() -> html.Header:
+    """Page header."""
     return html.Header(dbc.Container(html.Div([
         html.Div([
             html.H2("Healthcare Cost — Model Results", className="mb-0",
@@ -336,6 +342,7 @@ def _toggle_target_filter(active):
 # Tab 1 — Model Comparison
 
 def tab_comparison(f: dict):
+    """Tab 1: metrics table, metric bar chart and computational cost table."""
     ov = load_overall()
     sub = ov[ov["target"] == f["target"]].copy()
     sub = sub.set_index("model").reindex(
@@ -417,11 +424,12 @@ def _comparison_bar(metric, f):
 # Tab 2 — Prediction Diagnostics
 
 def tab_diagnostics(f: dict):
+    """Tab 2: actual vs predicted, residuals vs fitted and residual histogram."""
     df = _filter_predictions(f["model"], f)
     if df.empty:
         return empty_fig_card("No predictions for current filters.")
 
-    yt, yp, w = df["y_true"].to_numpy(), df["y_pred"].to_numpy(), df["weight"].to_numpy()
+    yt, yp = df["y_true"].to_numpy(), df["y_pred"].to_numpy()
     m = _wm(df)
 
     # 2.1 actual vs predicted (sampled for rendering) + identity + best-fit + R².
@@ -481,6 +489,7 @@ def tab_diagnostics(f: dict):
 # Tab 3 — Segmented Performance
 
 def tab_segmented(f: dict):
+    """Tab 3: metrics by segment and the best model per segment."""
     return html.Div([
         dbc.Row([
             dbc.Col(html.Div([html.Span("Segment by ", className="text-muted small me-2"),
@@ -608,6 +617,7 @@ def _seg_rank(dim, metric, f):
 # Tab 4 — Learning Curves
 
 def tab_learning(f: dict):
+    """Tab 4: learning curve of the selected model (base learners for the stack)."""
     if f["model"] == STACK_KEY:
         # The meta-model has no learning curve of its own, so overlay its base
         # learners' CV curves.
@@ -746,6 +756,7 @@ def _cross_model_fig(height: int = 460) -> go.Figure:
 
 
 def tab_shap(f: dict):
+    """Tab 5: SHAP charts from the pre-computed matrices, sliced by the filters."""
     models = shap_models()
     if not models:
         return empty_fig_card(
@@ -863,6 +874,7 @@ def _shap_dependence(feature, color_feat, f):
 
 
 def empty_fig_card(message: str):
+    """Card holding a blank figure with *message*."""
     return dbc.Card(dbc.CardBody(dcc.Graph(figure=empty_fig(message),
                     config={"displayModeBar": False})), className="border-0 shadow-sm")
 

@@ -12,6 +12,7 @@ from . import evaluate, tier4_stacking, train, tune
 
 
 def main() -> None:
+    """Run tuning, training, stacking and evaluation in order."""
     t0 = time.time()
     print("=" * 70, "\n[1/4] Hyperparameter tuning (total target)\n", "=" * 70)
     tune.main()
