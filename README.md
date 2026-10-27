@@ -1,6 +1,6 @@
 # Dutch Healthcare Costs by Postcode Area (2011–2023)
 
-Code for the master's thesis *Analysis and Prediction of Dutch Healthcare
+Code for the Master's thesis *Analysis and Prediction of Dutch Healthcare
 Costs Using Machine Learning: A Longitudinal Study of Vektis Open Data
 (2011–2023)*. It analyses Vektis health-insurance claim costs at the
 **3-digit postal code × age band × gender × year** grain, in four parts:
