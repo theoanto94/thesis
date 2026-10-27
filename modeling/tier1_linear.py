@@ -2,6 +2,10 @@
 
 Linear Regression, Ridge and Lasso: the performance floor, interpretable
 through their coefficients, so out of scope for the Phase 3 SHAP analysis.
+
+``ridge_ag`` is the "fair" linear baseline: Ridge on joint age x gender
+one-hots (so the gender gap may differ by age), the postcode target encoding
+and the numerics. See encoders.AgeGenderCross.
 """
 
 from __future__ import annotations
@@ -12,14 +16,14 @@ from sklearn.pipeline import Pipeline
 from . import config
 from .encoders import make_preprocessor
 
-MODEL_KEYS = ["linear", "ridge", "lasso"]
+MODEL_KEYS = ["linear", "ridge", "lasso", "ridge_ag"]
 
 
 def raw_estimator(model_key: str, params: dict):
     """Construct the bare linear estimator with the given hyperparameters."""
     if model_key == "linear":
         return LinearRegression()
-    if model_key == "ridge":
+    if model_key in ("ridge", "ridge_ag"):
         return Ridge(random_state=config.RANDOM_STATE, **params)
     if model_key == "lasso":
         return Lasso(random_state=config.RANDOM_STATE, max_iter=10_000, **params)

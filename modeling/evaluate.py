@@ -126,6 +126,23 @@ def learning_curve(model_key: str, ds: Dataset,
     return pd.DataFrame(rows)
 
 
+def _upsert(path, new: pd.DataFrame) -> pd.DataFrame:
+    """Write *new* to *path*, replacing only the rows of the models it contains.
+
+    Evaluating a subset of models must not drop the others from the shared
+    metric files the dashboard and the thesis tables read.
+    """
+    if path.exists():
+        old = pd.read_parquet(path)
+        old = old[~old["model"].isin(new["model"].unique())]
+        new = pd.concat([old, new], ignore_index=True)
+    order = {k: i for i, k in enumerate(config.MODEL_KEYS)}
+    new = new.sort_values("model", key=lambda s: s.map(order).fillna(len(order)),
+                          kind="stable").reset_index(drop=True)
+    new.to_parquet(path, index=False)
+    return new
+
+
 def main(models: list[str] | None = None, learning_curves: bool = True) -> None:
     """Evaluate the requested models (default: all) and write all artifacts."""
     ds = load_dataset()
@@ -146,12 +163,9 @@ def main(models: list[str] | None = None, learning_curves: bool = True) -> None:
                 config.LEARNING_CURVES_DIR / f"{key}.parquet", index=False)
 
     config.ensure_dirs()
-    ov = pd.concat(overall, ignore_index=True)
-    ov.to_parquet(config.METRICS_DIR / "overall.parquet", index=False)
-    pd.concat(by_age, ignore_index=True).to_parquet(
-        config.METRICS_DIR / "by_age_group.parquet", index=False)
-    pd.concat(by_gem, ignore_index=True).to_parquet(
-        config.METRICS_DIR / "by_gementee.parquet", index=False)
+    ov = _upsert(config.METRICS_DIR / "overall.parquet", pd.concat(overall, ignore_index=True))
+    _upsert(config.METRICS_DIR / "by_age_group.parquet", pd.concat(by_age, ignore_index=True))
+    _upsert(config.METRICS_DIR / "by_gementee.parquet", pd.concat(by_gem, ignore_index=True))
 
     tot = ov[ov["target"] == config.TARGET_TOTAL].sort_values("rmse")
     print("\nTotal-target leaderboard (test 2021-2023):")
@@ -160,5 +174,7 @@ def main(models: list[str] | None = None, learning_curves: bool = True) -> None:
 
 if __name__ == "__main__":
     import sys
-    arg_models = sys.argv[1:] or None
-    main(models=arg_models)
+    args = sys.argv[1:]
+    no_lc = "--no-learning-curves" in args
+    arg_models = [a for a in args if not a.startswith("--")] or None
+    main(models=arg_models, learning_curves=not no_lc)

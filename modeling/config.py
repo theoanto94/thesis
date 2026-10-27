@@ -129,6 +129,7 @@ UNKNOWN_CATEGORY: str = "UNKNOWN"
 # Ordered by tier; drives training and dashboard ordering.
 MODEL_KEYS: list[str] = [
     "linear", "ridge", "lasso",          # tier 1
+    "ridge_ag",                          # tier 1, age x gender interactions
     "random_forest", "gbm", "xgboost",   # tier 2
     "lightgbm", "catboost",              # tier 3
     "stacked",                           # tier 4
@@ -138,6 +139,7 @@ MODEL_LABELS: dict[str, str] = {
     "linear": "Linear Regression",
     "ridge": "Ridge",
     "lasso": "Lasso",
+    "ridge_ag": "Ridge (age x gender)",
     "random_forest": "Random Forest",
     "gbm": "Gradient Boosting",
     "xgboost": "XGBoost",
@@ -151,6 +153,7 @@ MODEL_ENCODER: dict[str, str] = {
     "linear": "linear",
     "ridge": "linear",
     "lasso": "linear",
+    "ridge_ag": "linear_interact",
     "random_forest": "tree",
     "gbm": "tree",
     "xgboost": "tree",
@@ -162,6 +165,7 @@ MODEL_ENCODER: dict[str, str] = {
 # reused to refit per-category. Plain 'linear' has nothing to tune.
 PARAM_GRIDS: dict[str, dict[str, list]] = {
     "ridge":         {"alpha": [0.1, 1.0, 10.0, 100.0]},
+    "ridge_ag":      {"alpha": [0.1, 1.0, 10.0, 100.0, 1_000.0, 10_000.0]},
     "lasso":         {"alpha": [0.001, 0.01, 0.1, 1.0]},
     "random_forest": {
         "n_estimators": [200, 400],
